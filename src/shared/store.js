@@ -1,3 +1,5 @@
+import bcrypt from 'bcryptjs';
+
 export const appStore = {
   hospitals: [
     {
@@ -87,8 +89,8 @@ export const appStore = {
     { hospital_id: 1, chave: 'retencao_dias', valor: { valor: 365 } },
   ],
   usuarios: [
-    { id: 1, nome: 'Super Admin', email: 'super@fundacao.com', perfil_id: 1, setor_id: null, ativo: true },
-    { id: 2, nome: 'Ouvidoria', email: 'ouvidoria@fundacao.com', perfil_id: 5, setor_id: null, ativo: true },
+    { id: 1, nome: 'Super Admin', email: 'super@fundacao.com', perfil_id: 1, perfil: 'super_admin', setor_id: null, ativo: true, senha_hash: bcrypt.hashSync('super123', 10) },
+    { id: 2, nome: 'Ouvidoria', email: 'ouvidoria@fundacao.com', perfil_id: 4, perfil: 'ouvidoria', setor_id: null, ativo: true, senha_hash: bcrypt.hashSync('ouvidoria123', 10) },
   ],
   perfis: [
     { id: 1, nome: 'Super Admin', permissoes: ['super_admin', 'admin_setor', 'gestao', 'ouvidoria', 'visu'] },

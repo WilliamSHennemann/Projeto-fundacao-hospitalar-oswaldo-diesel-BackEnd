@@ -51,7 +51,8 @@ app.use('/api', adminRoutes);
 
 app.use((error, _req, res, _next) => {
   const payload = errorResponse(error);
-  res.status(payload.codigo === 'NOT_FOUND' ? 404 : 500).json(payload);
+  const statusCode = error?.statusCode ?? error?.status ?? 500;
+  res.status(statusCode).json(payload);
 });
 
 export default app;
