@@ -13,6 +13,7 @@ import tvwallRoutes from './modules/tvwall/tvwall.routes.js';
 import exportacaoRoutes from './modules/exportacao/exportacao.routes.js';
 import adminRoutes from './modules/admin/admin.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
+import jobsRoutes from './modules/jobs/jobs.routes.js';
 
 export const app = express();
 
@@ -48,6 +49,7 @@ app.use('/api', dashboardRoutes);
 app.use('/api', tvwallRoutes);
 app.use('/api', exportacaoRoutes);
 app.use('/api', adminRoutes);
+app.use('/api', jobsRoutes);
 
 app.use((error, _req, res, _next) => {
   const payload = errorResponse(error);
