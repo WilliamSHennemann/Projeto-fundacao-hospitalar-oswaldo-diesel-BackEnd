@@ -13,7 +13,7 @@ const createPesquisaSchema = z.object({
 });
 
 const respostaSchema = z.object({
-  valor: z.number().int().min(1).max(5).optional(),
+  valor: z.number().int().min(0).max(10).optional(),
   texto: z.string().optional(),
   opcao_id: z.number().int().optional(),
   pergunta_id: z.number().int().positive(),
@@ -194,7 +194,8 @@ router.post('/pesquisas/:id/finalizar', (req, res) => {
 
   const limiarNps = appStore.configuracoes.find((item) => item.chave === 'limiar_nps_baixo')?.valor?.valor ?? 6;
   const limiarMedia = appStore.configuracoes.find((item) => item.chave === 'limiar_media_baixa')?.valor?.valor ?? 2;
-  const encaminharOuvidoria = pesquisa.nps_nota <= Number(limiarNps) || (pesquisa.media_parcial ?? 0) <= Number(limiarMedia);
+  const mediaBaixa = pesquisa.media_parcial !== null && pesquisa.media_parcial <= Number(limiarMedia);
+  const encaminharOuvidoria = pesquisa.nps_nota <= Number(limiarNps) || mediaBaixa;
 
   return res.json({
     destino: encaminharOuvidoria ? 'ouvidoria' : 'agradecimento',

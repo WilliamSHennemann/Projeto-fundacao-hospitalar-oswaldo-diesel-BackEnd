@@ -18,4 +18,20 @@ describe('public survey endpoints', () => {
     expect(result.status).toBe(422);
     expect(result.body.codigo).toBe('NPS_REQUIRED');
   });
+
+  it('accepts a valid nps response and finalizes the survey successfully', async () => {
+    const create = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: false, consentimento: true });
+    expect(create.status).toBe(201);
+
+    const npsAnswer = await request(app)
+      .put(`/api/pesquisas/${create.body.pesquisa_id}/respostas/7`)
+      .send({ valor: 9, pergunta_id: 7 });
+
+    expect(npsAnswer.status).toBe(200);
+    expect(npsAnswer.body.ok).toBe(true);
+
+    const finalize = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/finalizar`);
+    expect(finalize.status).toBe(200);
+    expect(finalize.body.destino).toBe('agradecimento');
+  });
 });
