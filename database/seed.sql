@@ -1,5 +1,5 @@
 INSERT INTO hospital (id, nome, cnpj, endereco) VALUES
-  (1, 'Fundação Hospitalar Dr. Oswaldo Diesel', '12.345.678/0001-90', 'Rua das Flores, 100')
+  (1, 'Fundação Hospitalar Dr. Oswaldo Diesel', '90.936.774/0001-11', 'Rua 12 de Maio, 555')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO setor (id, hospital_id, nome, slug, url, qrcode, ativo) VALUES
