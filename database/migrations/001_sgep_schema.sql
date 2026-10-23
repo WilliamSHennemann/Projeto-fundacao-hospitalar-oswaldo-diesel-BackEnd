@@ -139,8 +139,11 @@ CREATE TABLE IF NOT EXISTS usuario (
   email VARCHAR(255) UNIQUE NOT NULL,
   perfil_id INTEGER NOT NULL REFERENCES perfil(id),
   setor_id INTEGER NULL REFERENCES setor(id),
-  ativo BOOLEAN NOT NULL DEFAULT TRUE
+  ativo BOOLEAN NOT NULL DEFAULT TRUE,
+  senha_hash TEXT
 );
+
+ALTER TABLE usuario ADD COLUMN IF NOT EXISTS senha_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS auditoria (
   id SERIAL PRIMARY KEY,
@@ -173,7 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_pesquisa_status ON pesquisa(status);
 CREATE INDEX IF NOT EXISTS idx_resposta_pesquisa ON resposta(pesquisa_id);
 CREATE INDEX IF NOT EXISTS idx_manifestacao_status ON manifestacao(status);
 
-CREATE VIEW vw_nps_por_setor_turno AS
+CREATE OR REPLACE VIEW vw_nps_por_setor_turno AS
 SELECT
   p.setor_id,
   p.turno,
@@ -188,14 +191,21 @@ ALTER TABLE pesquisa ENABLE ROW LEVEL SECURITY;
 ALTER TABLE setor ENABLE ROW LEVEL SECURITY;
 ALTER TABLE manifestacao ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS setor_public_read ON setor;
 CREATE POLICY setor_public_read ON setor
-  FOR SELECT USING (ativo = TRUE);
+ FOR SELECT USING (ativo = TRUE);
 
+DROP POLICY IF EXISTS pesquisa_public_insert ON pesquisa;
 CREATE POLICY pesquisa_public_insert ON pesquisa
-  FOR INSERT WITH CHECK (TRUE);
+ FOR INSERT WITH CHECK (TRUE);
 
+DROP POLICY IF EXISTS pesquisa_public_update ON pesquisa;
 CREATE POLICY pesquisa_public_update ON pesquisa
-  FOR UPDATE USING (TRUE);
+ FOR UPDATE USING (TRUE);
 
+DROP POLICY IF EXISTS manifestacao_ouvidoria_read ON manifestacao;
 CREATE POLICY manifestacao_ouvidoria_read ON manifestacao
-  FOR SELECT USING (true);
+ FOR SELECT USING (true);
+
+CREATE UNIQUE INDEX IF NOT EXISTS opcao_resposta_pergunta_valor_uidx
+ ON opcao_resposta (pergunta_id, valor);

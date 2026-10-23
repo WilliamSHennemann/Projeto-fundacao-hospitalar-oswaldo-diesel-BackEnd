@@ -39,9 +39,15 @@ FROM (
     (1, 2, 'Ruim', '🙁'),
     (1, 3, 'Neutro', '😐'),
     (1, 4, 'Bom', '🙂'),
-    (1, 5, 'Muito bom', '😍')
+    (1, 5, 'Muito bom', '😍'),
+    (2, 1, 'Muito ruim', '😡'), (2, 2, 'Ruim', '🙁'), (2, 3, 'Neutro', '😐'), (2, 4, 'Bom', '🙂'), (2, 5, 'Muito bom', '😍'),
+    (3, 1, 'Muito ruim', '😡'), (3, 2, 'Ruim', '🙁'), (3, 3, 'Neutro', '😐'), (3, 4, 'Bom', '🙂'), (3, 5, 'Muito bom', '😍'),
+    (4, 1, 'Muito ruim', '😡'), (4, 2, 'Ruim', '🙁'), (4, 3, 'Neutro', '😐'), (4, 4, 'Bom', '🙂'), (4, 5, 'Muito bom', '😍'),
+    (5, 1, 'Muito ruim', '😡'), (5, 2, 'Ruim', '🙁'), (5, 3, 'Neutro', '😐'), (5, 4, 'Bom', '🙂'), (5, 5, 'Muito bom', '😍'),
+    (6, 1, 'Muito ruim', '😡'), (6, 2, 'Ruim', '🙁'), (6, 3, 'Neutro', '😐'), (6, 4, 'Bom', '🙂'), (6, 5, 'Muito bom', '😍')
 ) AS v(pergunta_id, valor, rotulo, emoji)
-WHERE EXISTS (SELECT 1 FROM pergunta WHERE id = v.pergunta_id);
+WHERE EXISTS (SELECT 1 FROM pergunta WHERE id = v.pergunta_id)
+ON CONFLICT (pergunta_id, valor) DO NOTHING;
 
 INSERT INTO perfil (id, nome, permissoes) VALUES
   (1, 'Super Admin', '{"roles": ["super_admin", "admin_setor", "gestao", "ouvidoria", "visualizador"]}'::jsonb),
@@ -57,3 +63,9 @@ INSERT INTO configuracao (hospital_id, chave, valor) VALUES
   (1, 'minutos_abandono', '{"valor": 30}'),
   (1, 'retencao_dias', '{"valor": 365}')
 ON CONFLICT (hospital_id, chave) DO NOTHING;
+
+SELECT setval(pg_get_serial_sequence('hospital', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM hospital;
+SELECT setval(pg_get_serial_sequence('setor', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM setor;
+SELECT setval(pg_get_serial_sequence('rota', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM rota;
+SELECT setval(pg_get_serial_sequence('pergunta', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM pergunta;
+SELECT setval(pg_get_serial_sequence('perfil', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM perfil;

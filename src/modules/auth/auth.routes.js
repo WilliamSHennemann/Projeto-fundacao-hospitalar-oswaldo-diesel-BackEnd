@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { AppError } from '../../shared/errors.js';
 import { appStore } from '../../shared/store.js';
+import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
 
 const router = Router();
 
@@ -22,10 +23,10 @@ const normalizeUser = (user) => ({
   id: user.id,
   nome: user.nome,
   email: user.email,
-  perfil: user.perfil ?? 'super_admin',
+  perfil: user.perfil ?? user.permissoes?.[0] ?? 'super_admin',
   setor_id: user.setor_id ?? null,
   ativo: user.ativo,
-  permissoes: getProfilePermissions(user),
+  permissoes: Array.isArray(user.permissoes) ? user.permissoes : getProfilePermissions(user),
 });
 
 export const issueToken = (user) =>
@@ -41,7 +42,7 @@ export const issueToken = (user) =>
     { expiresIn: '8h' },
   );
 
-export const requireAuth = (req, _res, next) => {
+export const requireAuth = asyncHandler(async (req, _res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith('Bearer ') ? authHeader.replace(/^Bearer\s+/i, '') : null;
 
@@ -49,20 +50,34 @@ export const requireAuth = (req, _res, next) => {
     return next(new AppError('Token ausente', 401, 'TOKEN_MISSING'));
   }
 
+  let payload;
   try {
-    const payload = jwt.verify(token, env.jwtSecret);
-    const user = appStore.usuarios.find((item) => item.id === Number(payload.sub));
-
-    if (!user) {
-      return next(new AppError('Usuário não encontrado', 401, 'USER_NOT_FOUND'));
-    }
-
-    req.user = normalizeUser(user);
-    return next();
+    payload = jwt.verify(token, env.jwtSecret);
   } catch (_error) {
     return next(new AppError('Token inválido ou expirado', 401, 'INVALID_TOKEN'));
   }
-};
+
+  if (databaseConfigured) {
+    const result = await query(
+      `SELECT u.id, u.nome, u.email, u.setor_id, u.ativo,
+              COALESCE(p.permissoes->'roles', '[]'::json) AS permissoes
+       FROM usuario u
+       JOIN perfil p ON p.id = u.perfil_id
+       WHERE u.id = $1 AND u.ativo = TRUE`,
+      [Number(payload.sub)],
+    );
+    if (!result.rowCount) return next(new AppError('Usuário não encontrado', 401, 'USER_NOT_FOUND'));
+    req.user = normalizeUser(result.rows[0]);
+    return next();
+  }
+
+  const user = appStore.usuarios.find((item) => item.id === Number(payload.sub));
+  if (!user) {
+    return next(new AppError('Usuário não encontrado', 401, 'USER_NOT_FOUND'));
+  }
+  req.user = normalizeUser(user);
+  return next();
+});
 
 export const requirePermission = (permission, scope) => (req, _res, next) => {
   if (!req.user) {
@@ -82,21 +97,34 @@ export const requirePermission = (permission, scope) => (req, _res, next) => {
   return next(new AppError('Permissão insuficiente', 403, 'FORBIDDEN'));
 };
 
-router.post('/auth/login', (req, res) => {
+router.post('/auth/login', asyncHandler(async (req, res) => {
   const payload = loginSchema.safeParse(req.body);
   if (!payload.success) {
     return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
   }
 
-  const user = appStore.usuarios.find(
-    (item) => item.email.toLowerCase() === payload.data.email.toLowerCase() && item.ativo,
-  );
+  let user;
+  if (databaseConfigured) {
+    const result = await query(
+      `SELECT u.id, u.nome, u.email, u.setor_id, u.ativo, u.senha_hash,
+              COALESCE(p.permissoes->'roles', '[]'::json) AS permissoes
+       FROM usuario u
+       JOIN perfil p ON p.id = u.perfil_id
+       WHERE LOWER(u.email) = LOWER($1) AND u.ativo = TRUE`,
+      [payload.data.email],
+    );
+    user = result.rows[0];
+  } else {
+    user = appStore.usuarios.find(
+      (item) => item.email.toLowerCase() === payload.data.email.toLowerCase() && item.ativo,
+    );
+  }
 
   if (!user) {
     return res.status(401).json({ erro: 'Credenciais inválidas', codigo: 'INVALID_CREDENTIALS' });
   }
 
-  const validPassword = bcrypt.compareSync(payload.data.senha, user.senha_hash ?? '');
+  const validPassword = await bcrypt.compare(payload.data.senha, user.senha_hash ?? '');
   if (!validPassword) {
     return res.status(401).json({ erro: 'Credenciais inválidas', codigo: 'INVALID_CREDENTIALS' });
   }
@@ -113,7 +141,7 @@ router.post('/auth/login', (req, res) => {
       permissoes: safeUser.permissoes,
     },
   });
-});
+}));
 
 router.get('/auth/me', requireAuth, (req, res) => {
   res.json({ usuario: req.user });

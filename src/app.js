@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { env } from './config/env.js';
+import { databaseConfigured, query } from './config/database.js';
 import { errorResponse } from './shared/errors.js';
 import { openApiDocument } from './openapi.js';
 
@@ -34,8 +35,15 @@ app.use(
   }),
 );
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'sgep-backend' });
+app.get('/health', async (_req, res, next) => {
+  try {
+    if (databaseConfigured) {
+      await query('SELECT 1');
+    }
+    res.json({ ok: true, service: 'sgep-backend', database: databaseConfigured ? 'connected' : 'not_configured' });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/docs', (_req, res) => {
