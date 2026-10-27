@@ -43,9 +43,12 @@ O backend conecta ao PostgreSQL do Supabase usando `pg` (não precisa usar a cha
 O servidor carrega `.env` automaticamente, testa a conexão antes de iniciar e
 encerra com erro se não conseguir conectar. Em produção, configure as variáveis no
 painel da hospedagem (por exemplo, **Environment** no Render), em vez de enviar o
-arquivo `.env`. TLS fica habilitado por padrão; não defina `DB_SSL=false` para o
-Supabase. Não compartilhe nem faça commit do `.env`, da senha do banco ou de chaves
-do Supabase.
+arquivo `.env`. TLS fica habilitado por padrão e valida o certificado do servidor.
+Se o Node.js reportar `SELF_SIGNED_CERT_IN_CHAIN`, baixe o certificado CA oficial
+do projeto em **Supabase > Database > Settings > SSL Configuration** e configure
+seu conteúdo PEM na variável `DB_SSL_CA` do Render. A validação do certificado
+continua ativa. Não use `DB_SSL=false` como correção. Não compartilhe nem faça
+commit do `.env`, do certificado privado, da senha do banco ou de chaves do Supabase.
 
 Como alternativa à `DATABASE_URL`, também é possível configurar `DB_HOST`,
 `DB_PORT`, `DB_NAME`, `DB_USER` e `DB_PASSWORD`; não misture os dois formatos.

@@ -12,6 +12,7 @@ export const env = {
   dbUser: process.env.DB_USER,
   dbPassword: process.env.DB_PASSWORD,
   dbSsl: (process.env.DB_SSL ?? 'true').toLowerCase() !== 'false',
+  dbSslCa: process.env.DB_SSL_CA?.replace(/\\n/g, '\n'),
   jwtSecret: process.env.JWT_SECRET ?? 'change-me',
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60000),
