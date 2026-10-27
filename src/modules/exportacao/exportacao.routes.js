@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { appStore } from '../../shared/store.js';
-import { requireAuth } from '../auth/auth.routes.js';
+import { requireAuth, requireAnyPermission } from '../auth/auth.routes.js';
 import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
 
 const router = Router();
@@ -22,7 +22,7 @@ const createExportHandler = (tipo) => asyncHandler(async (req, res) => {
   res.json({ tipo, registros: appStore.pesquisas.length, exportado: true });
 });
 
-router.get('/exportacoes/excel', requireAuth, createExportHandler('excel'));
-router.get('/exportacoes/pdf', requireAuth, createExportHandler('pdf'));
+router.get('/exportacoes/excel', requireAuth, requireAnyPermission('super_admin', 'gestao', 'ouvidoria'), createExportHandler('excel'));
+router.get('/exportacoes/pdf', requireAuth, requireAnyPermission('super_admin', 'gestao', 'ouvidoria'), createExportHandler('pdf'));
 
 export default router;

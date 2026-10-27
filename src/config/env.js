@@ -18,3 +18,15 @@ export const env = {
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60000),
   rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 120),
 };
+
+if (env.nodeEnv === 'production') {
+  if (!env.databaseUrl && !(env.dbHost && env.dbUser && env.dbPassword)) {
+    throw new Error('DATABASE_URL ou as variáveis DB_* são obrigatórias em produção.');
+  }
+  if (!env.corsOrigin || env.corsOrigin === '*') {
+    throw new Error('CORS_ORIGIN deve apontar para o domínio do frontend em produção.');
+  }
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32 || process.env.JWT_SECRET === 'change-me') {
+    throw new Error('JWT_SECRET deve ter pelo menos 32 caracteres em produção.');
+  }
+}

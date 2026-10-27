@@ -74,5 +74,39 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `PUT /api/pesquisas/:id/respostas/:perguntaId`
 - `POST /api/pesquisas/:id/finalizar`
 - `GET /api/dashboard/resumo`
+- `GET /api/dashboard/resumo?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
+- `GET /api/admin/perguntas`
+- `POST /api/admin/perguntas`
+- `PUT /api/admin/perguntas/:id`
+- `DELETE /api/admin/perguntas/:id`
+- `PATCH /api/admin/perguntas/reordenar`
 - `GET /api/tvwall`
 - `GET /docs`
+
+O dashboard aceita `inicio`, `fim` e `setor_id` em `/dashboard/resumo`,
+`/dashboard/setores`, `/dashboard/setores/:id/turnos` e `/dashboard/em-andamento`.
+Os papéis `super_admin` e `gestao` podem administrar perguntas; `admin_setor`
+fica limitado às perguntas do seu setor. `visualizador`, `ouvidoria`, `gestao` e
+`super_admin` podem consultar o dashboard; apenas `ouvidoria` e `super_admin`
+podem consultar ou atualizar manifestações.
+
+Ao cadastrar setor por `POST /api/admin/setores`, o backend normaliza o slug e
+retorna `url: "/<slug>"` para o QR Code. O frontend deve tratar essa rota pública
+de forma genérica e buscar o fluxo em `GET /api/setores/:slug/fluxo`; assim, novos
+setores não precisam de rotas codificadas individualmente.
+
+### Segurança do fluxo público
+
+`POST /api/pesquisas` retorna `pesquisa_id` e `token`. Envie esse token no cabeçalho
+`X-Pesquisa-Token` em todas as chamadas da pesquisa: salvar respostas, finalizar,
+registrar contato e enviar manifestação. Um token não pode ser reutilizado em outra
+pesquisa. Para contato após uma pesquisa anônima, o paciente precisa informar
+`consentimento: true` e um telefone; só então o vínculo de contato é registrado.
+
+O destino da finalização considera somente o NPS: notas de 0 a 6 retornam
+`destino: "ouvidoria"` e notas de 7 a 10 retornam `destino: "agradecimento"`.
+Uma média baixa nas perguntas anteriores não altera essa decisão.
+
+Em produção, configure `DATABASE_URL` (ou o conjunto `DB_*`), `JWT_SECRET` com
+ao menos 32 caracteres e `CORS_ORIGIN` com o domínio exato do frontend. O servidor
+recusa iniciar em produção sem banco, com CORS curinga ou com segredo JWT fraco.

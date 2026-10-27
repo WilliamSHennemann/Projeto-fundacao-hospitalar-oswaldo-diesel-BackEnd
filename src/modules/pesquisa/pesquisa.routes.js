@@ -25,8 +25,27 @@ const pacienteSchema = z.object({
   nome: z.string().optional(),
   nome_mae: z.string().optional(),
   data_nascimento: z.string().optional(),
-  telefone: z.string().optional(),
+  telefone: z.string().min(1).optional(),
   consentimento: z.boolean().default(false),
+}).refine((data) => !data.consentimento || Boolean(data.telefone?.trim()), {
+  message: 'Telefone obrigatório quando houver consentimento para contato',
+  path: ['telefone'],
+});
+
+const requirePesquisaToken = asyncHandler(async (req, _res, next) => {
+  const token = req.get('X-Pesquisa-Token');
+  if (!token) throw new AppError('Token da pesquisa ausente ou inválido', 401, 'PESQUISA_TOKEN_INVALID');
+  const id = Number(req.params.id);
+  if (databaseConfigured) {
+    const result = await query('SELECT id, token FROM pesquisa WHERE id = $1', [id]);
+    if (!result.rowCount) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    if (result.rows[0].token !== token) throw new AppError('Token não pertence a esta pesquisa', 403, 'PESQUISA_TOKEN_FORBIDDEN');
+  } else {
+    const pesquisa = getPesquisaById(id);
+    if (!pesquisa) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    if (pesquisa.token !== token) throw new AppError('Token não pertence a esta pesquisa', 403, 'PESQUISA_TOKEN_FORBIDDEN');
+  }
+  next();
 });
 
 router.get('/setores', asyncHandler(async (_req, res) => {
@@ -213,7 +232,7 @@ router.post('/pesquisas', asyncHandler(async (req, res) => {
   return res.status(201).json({ pesquisa_id: pesquisa.id, token: pesquisa.token, setor: setor.slug });
 }));
 
-router.put('/pesquisas/:id/respostas/:perguntaId', asyncHandler(async (req, res) => {
+router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHandler(async (req, res) => {
   const payload = respostaSchema.safeParse(req.body);
   if (!payload.success) {
     return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
@@ -325,7 +344,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', asyncHandler(async (req, res)
   });
 }));
 
-router.post('/pesquisas/:id/finalizar', asyncHandler(async (req, res) => {
+router.post('/pesquisas/:id/finalizar', requirePesquisaToken, asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const result = await query('SELECT * FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
     const pesquisaDb = result.rows[0];
@@ -334,17 +353,7 @@ router.post('/pesquisas/:id/finalizar', asyncHandler(async (req, res) => {
       return res.status(422).json({ erro: 'NPS obrigatório antes de finalizar', codigo: 'NPS_REQUIRED' });
     }
 
-    const config = await query(
-      `SELECT chave, valor FROM configuracao WHERE hospital_id = (
-         SELECT hospital_id FROM setor WHERE id = $1
-       ) AND chave IN ('limiar_nps_baixo', 'limiar_media_baixa')`,
-      [pesquisaDb.setor_id],
-    );
-    const values = Object.fromEntries(config.rows.map(({ chave, valor }) => [chave, valor?.valor]));
-    const limiarNps = Number(values.limiar_nps_baixo ?? 6);
-    const limiarMedia = Number(values.limiar_media_baixa ?? 2);
-    const encaminhar = pesquisaDb.nps_nota <= limiarNps
-      || (pesquisaDb.media_parcial !== null && Number(pesquisaDb.media_parcial) <= limiarMedia);
+    const encaminhar = Number(pesquisaDb.nps_nota) <= 6;
     await query(
       `UPDATE pesquisa
        SET status = 'concluida', encaminhado_ouvidoria = $2, ultima_atividade = NOW()
@@ -353,7 +362,7 @@ router.post('/pesquisas/:id/finalizar', asyncHandler(async (req, res) => {
     );
     return res.json({
       destino: encaminhar ? 'ouvidoria' : 'agradecimento',
-      motivo: encaminhar ? 'nps_baixo_ou_media_baixa' : 'satisfacao_aceitavel',
+      motivo: encaminhar ? 'nps_baixo' : 'nps_adequado',
     });
   }
 
@@ -369,29 +378,27 @@ router.post('/pesquisas/:id/finalizar', asyncHandler(async (req, res) => {
   pesquisa.status = 'concluida';
   pesquisa.ultima_atividade = new Date().toISOString();
 
-  const limiarNps = appStore.configuracoes.find((item) => item.chave === 'limiar_nps_baixo')?.valor?.valor ?? 6;
-  const limiarMedia = appStore.configuracoes.find((item) => item.chave === 'limiar_media_baixa')?.valor?.valor ?? 2;
-  const mediaBaixa = pesquisa.media_parcial !== null && pesquisa.media_parcial <= Number(limiarMedia);
-  const encaminharOuvidoria = pesquisa.nps_nota <= Number(limiarNps) || mediaBaixa;
+  const encaminharOuvidoria = Number(pesquisa.nps_nota) <= 6;
+  pesquisa.encaminhado_ouvidoria = encaminharOuvidoria;
 
   return res.json({
     destino: encaminharOuvidoria ? 'ouvidoria' : 'agradecimento',
-    motivo: encaminharOuvidoria ? 'nps_baixo_ou_media_baixa' : 'satisfacao_aceitavel',
+    motivo: encaminharOuvidoria ? 'nps_baixo' : 'nps_adequado',
   });
 }));
 
-router.post('/pesquisas/:id/paciente', asyncHandler(async (req, res) => {
+router.post('/pesquisas/:id/paciente', requirePesquisaToken, asyncHandler(async (req, res) => {
   const payload = pacienteSchema.safeParse(req.body);
   if (!payload.success) {
     return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
   }
 
   if (databaseConfigured) {
-    const surveyResult = await query('SELECT id, anonimo FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
+    const surveyResult = await query('SELECT id FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
     const survey = surveyResult.rows[0];
     if (!survey) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
-    if (survey.anonimo || !payload.data.consentimento) {
-      return res.status(400).json({ erro: 'Somente com consentimento explícito e não anônimo', codigo: 'CONSENTIMENTO_INVALIDO' });
+    if (!payload.data.consentimento) {
+      return res.status(400).json({ erro: 'Consentimento explícito obrigatório', codigo: 'CONSENTIMENTO_INVALIDO' });
     }
     const patient = await query(
       `INSERT INTO paciente (nome, nome_mae, data_nascimento, telefone, consentimento)
@@ -404,7 +411,7 @@ router.post('/pesquisas/:id/paciente', asyncHandler(async (req, res) => {
         payload.data.telefone ?? null,
       ],
     );
-    await query('UPDATE pesquisa SET paciente_id = $2 WHERE id = $1', [survey.id, patient.rows[0].id]);
+    await query('UPDATE pesquisa SET paciente_id = $2, anonimo = FALSE, consentimento = TRUE WHERE id = $1', [survey.id, patient.rows[0].id]);
     return res.status(201).json({ ok: true });
   }
 
@@ -412,8 +419,8 @@ router.post('/pesquisas/:id/paciente', asyncHandler(async (req, res) => {
   if (!pesquisa) {
     throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
   }
-  if (pesquisa.anonimo || !payload.data.consentimento) {
-    return res.status(400).json({ erro: 'Somente com consentimento explícito e não anônimo', codigo: 'CONSENTIMENTO_INVALIDO' });
+  if (!payload.data.consentimento) {
+    return res.status(400).json({ erro: 'Consentimento explícito obrigatório', codigo: 'CONSENTIMENTO_INVALIDO' });
   }
 
   const paciente = {
@@ -423,11 +430,13 @@ router.post('/pesquisas/:id/paciente', asyncHandler(async (req, res) => {
   };
   appStore.pacientes.push(paciente);
   pesquisa.paciente_id = paciente.id;
+  pesquisa.anonimo = false;
+  pesquisa.consentimento = true;
 
   return res.status(201).json({ ok: true });
 }));
 
-router.post('/pesquisas/:id/manifestacoes', asyncHandler(async (req, res) => {
+router.post('/pesquisas/:id/manifestacoes', requirePesquisaToken, asyncHandler(async (req, res) => {
   const schema = z.object({
     tipo: z.enum(['elogio', 'reclamacao', 'sugestao']),
     descricao: z.string().min(5),
@@ -441,7 +450,7 @@ router.post('/pesquisas/:id/manifestacoes', asyncHandler(async (req, res) => {
   }
 
   if (databaseConfigured) {
-    const result = await query('SELECT id, media_parcial FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
+    const result = await query('SELECT id, media_parcial, consentimento, anonimo FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
     const survey = result.rows[0];
     if (!survey) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
     const inserted = await query(
@@ -454,10 +463,11 @@ router.post('/pesquisas/:id/manifestacoes', asyncHandler(async (req, res) => {
         payload.data.descricao,
         payload.data.anonimo,
         survey.media_parcial,
-        payload.data.anonimo ? null : payload.data.canal_contato ?? null,
+        payload.data.anonimo || !survey.consentimento || survey.anonimo ? null : payload.data.canal_contato ?? null,
       ],
     );
-    return res.status(201).json(inserted.rows[0]);
+    const { canal_contato: _privateContact, ...publicManifestation } = inserted.rows[0];
+    return res.status(201).json(publicManifestation);
   }
 
   const pesquisa = getPesquisaById(Number(req.params.id));
@@ -476,12 +486,13 @@ router.post('/pesquisas/:id/manifestacoes', asyncHandler(async (req, res) => {
     origem: 'pesquisa',
     media_origem: pesquisa.media_parcial,
     motivo_encaminhamento: null,
-    canal_contato: payload.data.anonimo ? null : payload.data.canal_contato ?? null,
+    canal_contato: payload.data.anonimo || !pesquisa.consentimento || pesquisa.anonimo ? null : payload.data.canal_contato ?? null,
     parecer_interno: null,
   };
 
   appStore.manifestacoes.push(manifestacao);
-  return res.status(201).json(manifestacao);
+  const { canal_contato: _privateContact, ...publicManifestation } = manifestacao;
+  return res.status(201).json(publicManifestation);
 }));
 
 export default router;

@@ -86,7 +86,7 @@ export const requirePermission = (permission, scope) => (req, _res, next) => {
 
   const permissions = new Set(req.user.permissoes ?? []);
 
-  if (permissions.has(permission)) {
+  if (permissions.has('super_admin') || permissions.has(permission)) {
     return next();
   }
 
@@ -95,6 +95,13 @@ export const requirePermission = (permission, scope) => (req, _res, next) => {
   }
 
   return next(new AppError('Permissão insuficiente', 403, 'FORBIDDEN'));
+};
+
+export const requireAnyPermission = (...permissions) => (req, _res, next) => {
+  if (!req.user) return next(new AppError('NÃ£o autenticado', 401, 'UNAUTHORIZED'));
+  const granted = new Set(req.user.permissoes ?? []);
+  if (granted.has('super_admin') || permissions.some((permission) => granted.has(permission) || (permission === 'visu' && granted.has('visualizador')))) return next();
+  return next(new AppError('PermissÃ£o insuficiente', 403, 'FORBIDDEN'));
 };
 
 router.post('/auth/login', asyncHandler(async (req, res) => {

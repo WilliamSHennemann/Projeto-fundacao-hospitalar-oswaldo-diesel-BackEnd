@@ -1,3 +1,9 @@
+const dashboardFilterParameters = () => [
+  { name: 'inicio', in: 'query', required: false, schema: { type: 'string', format: 'date' } },
+  { name: 'fim', in: 'query', required: false, schema: { type: 'string', format: 'date' } },
+  { name: 'setor_id', in: 'query', required: false, schema: { type: 'integer', minimum: 1 } },
+];
+
 export const openApiDocument = {
   openapi: '3.0.0',
   info: {
@@ -13,6 +19,7 @@ export const openApiDocument = {
         scheme: 'bearer',
         bearerFormat: 'JWT',
       },
+      pesquisaToken: { type: 'apiKey', in: 'header', name: 'X-Pesquisa-Token' },
     },
     schemas: {
       Setor: {
@@ -89,6 +96,7 @@ export const openApiDocument = {
     '/auth/login': {
       post: {
         summary: 'Login do usuário',
+        security: [],
         requestBody: {
           required: true,
           content: {
@@ -117,6 +125,7 @@ export const openApiDocument = {
     '/setores': {
       get: {
         summary: 'Lista setores ativos',
+        security: [],
         responses: {
           '200': { description: 'Lista de setores', content: { 'application/json': { schema: { type: 'array', items: { $ref: '#/components/schemas/Setor' } } } } },
         },
@@ -125,6 +134,7 @@ export const openApiDocument = {
     '/setores/{slug}': {
       get: {
         summary: 'Detalha um setor',
+        security: [],
         parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Setor encontrado', content: { 'application/json': { schema: { $ref: '#/components/schemas/Setor' } } } },
@@ -135,6 +145,7 @@ export const openApiDocument = {
     '/setores/{slug}/fluxo': {
       get: {
         summary: 'Retorna o fluxo da pesquisa por setor',
+        security: [],
         parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Fluxo retornado com sucesso' },
@@ -145,6 +156,7 @@ export const openApiDocument = {
     '/setores/{slug}/perguntas/{n}': {
       get: {
         summary: 'Busca uma pergunta específica do fluxo',
+        security: [],
         parameters: [
           { name: 'slug', in: 'path', required: true, schema: { type: 'string' } },
           { name: 'n', in: 'path', required: true, schema: { type: 'integer' } },
@@ -158,6 +170,7 @@ export const openApiDocument = {
     '/pesquisas': {
       post: {
         summary: 'Cria uma pesquisa para um setor',
+        security: [],
         requestBody: {
           required: true,
           content: {
@@ -183,9 +196,11 @@ export const openApiDocument = {
     '/pesquisas/{id}/respostas/{perguntaId}': {
       put: {
         summary: 'Salva ou atualiza a resposta de uma pergunta',
+        security: [{ pesquisaToken: [] }],
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
           { name: 'perguntaId', in: 'path', required: true, schema: { type: 'integer' } },
+          { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } },
         ],
         requestBody: {
           required: true,
@@ -201,7 +216,8 @@ export const openApiDocument = {
     '/pesquisas/{id}/finalizar': {
       post: {
         summary: 'Finaliza a pesquisa e decide destino',
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        security: [{ pesquisaToken: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } }],
         responses: {
           '200': { description: 'Pesquisa finalizada', content: { 'application/json': { schema: { type: 'object', properties: { destino: { type: 'string' }, motivo: { type: 'string' } } } } } },
           '404': { description: 'Pesquisa não encontrada' },
@@ -212,7 +228,8 @@ export const openApiDocument = {
     '/pesquisas/{id}/paciente': {
       post: {
         summary: 'Registra dados do paciente com consentimento',
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        security: [{ pesquisaToken: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } }],
         responses: {
           '201': { description: 'Paciente registrado' },
           '400': { description: 'Consentimento inválido ou payload inválido' },
@@ -222,7 +239,8 @@ export const openApiDocument = {
     '/pesquisas/{id}/manifestacoes': {
       post: {
         summary: 'Cria uma manifestação a partir da pesquisa',
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        security: [{ pesquisaToken: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } }],
         responses: {
           '201': { description: 'Manifestação criada', content: { 'application/json': { schema: { $ref: '#/components/schemas/Manifestacao' } } } },
         },
@@ -261,6 +279,7 @@ export const openApiDocument = {
       get: {
         summary: 'Resumo geral do dashboard',
         security: [{ bearerAuth: [] }],
+        parameters: dashboardFilterParameters(),
         responses: {
           '200': { description: 'Resumo do dashboard' },
         },
@@ -270,6 +289,7 @@ export const openApiDocument = {
       get: {
         summary: 'Resumo por setor',
         security: [{ bearerAuth: [] }],
+        parameters: dashboardFilterParameters(),
         responses: {
           '200': { description: 'Dados resumidos por setor' },
         },
@@ -279,7 +299,7 @@ export const openApiDocument = {
       get: {
         summary: 'Resumo por turno de um setor',
         security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, ...dashboardFilterParameters()],
         responses: {
           '200': { description: 'Dados por turno' },
         },
@@ -289,6 +309,7 @@ export const openApiDocument = {
       get: {
         summary: 'Pesquisas em andamento',
         security: [{ bearerAuth: [] }],
+        parameters: dashboardFilterParameters(),
         responses: {
           '200': { description: 'Lista de pesquisas em andamento' },
         },
@@ -337,6 +358,26 @@ export const openApiDocument = {
           '200': { description: 'Exportação concluída' },
         },
       },
+    },
+    '/admin/perguntas': {
+      get: {
+        summary: 'Lista perguntas administrativas',
+        security: [{ bearerAuth: [] }],
+        responses: { '200': { description: 'Perguntas com opções de resposta' }, '403': { description: 'Permissão insuficiente' } },
+      },
+      post: {
+        summary: 'Cria uma pergunta',
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['texto', 'tipo', 'ordem'], properties: { texto: { type: 'string' }, tipo: { type: 'string', enum: ['rostinho', 'texto', 'multipla', 'nps'] }, setor_id: { type: 'integer', nullable: true }, geral: { type: 'boolean' }, ordem: { type: 'integer' }, obrigatoria: { type: 'boolean' }, ativo: { type: 'boolean' }, opcoes: { type: 'array', items: { type: 'object', properties: { valor: { type: 'integer' }, rotulo: { type: 'string' }, emoji: { type: 'string' } } } } } } } } },
+        responses: { '201': { description: 'Pergunta criada' }, '400': { description: 'Dados inválidos' }, '409': { description: 'Pergunta NPS geral já existe' } },
+      },
+    },
+    '/admin/perguntas/{id}': {
+      put: { summary: 'Edita pergunta e opções', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }], responses: { '200': { description: 'Pergunta atualizada' }, '403': { description: 'Permissão insuficiente para o setor' }, '404': { description: 'Pergunta não encontrada' } } },
+      delete: { summary: 'Desativa uma pergunta sem apagar histórico', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }], responses: { '200': { description: 'Pergunta desativada' }, '404': { description: 'Pergunta não encontrada' } } },
+    },
+    '/admin/perguntas/reordenar': {
+      patch: { summary: 'Reordena perguntas em transação', security: [{ bearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['perguntas'], properties: { perguntas: { type: 'array', items: { type: 'object', required: ['id', 'ordem'], properties: { id: { type: 'integer' }, ordem: { type: 'integer' } } } } } } } } }, responses: { '200': { description: 'Ordem atualizada' }, '400': { description: 'IDs ou ordens inválidas' } } },
     },
     '/admin/setores': {
       get: {
