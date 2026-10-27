@@ -19,29 +19,38 @@ Backend do Sistema de Gestão da Experiência do Paciente para a Fundação Hosp
 - `npm run migrate`
 - `npm run seed`
 
-## Supabase / Render
+## Conectar ao Supabase
 
-The backend uses PostgreSQL through `pg`. Configure either `DATABASE_URL` or all of
-`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`; do not set both
-connection formats. For Supabase on Render, use the Supabase Session Pooler
-connection details. TLS is enabled by default; set `DB_SSL=false` only for a
-trusted local PostgreSQL instance.
+O backend conecta ao PostgreSQL do Supabase usando `pg` (não precisa usar a chave
+`anon` nem a `service_role`). Para configurar localmente:
 
-Also configure `JWT_SECRET` with a random value of at least 32 characters and
-`CORS_ORIGIN` with the frontend's public URL. Render provides `PORT` automatically.
-Production refuses to start without a database connection and a strong JWT secret.
+1. No Supabase, abra seu projeto e vá em **Connect**. Copie os dados de conexão do
+   **Session pooler**. O pooler é recomendado para backends hospedados, como no
+   Render.
+2. Crie seu arquivo local de ambiente copiando `.env.example` para `.env`.
+3. Cole a URL de conexão em `DATABASE_URL` no `.env`, substituindo o marcador pela
+   senha do banco. A URL deve ter o formato
+   `postgresql://postgres.[PROJECT-REF]:[SENHA]@[HOST-DO-POOLER]:5432/postgres`.
+   Use os valores exatos exibidos pelo botão **Connect** no seu projeto. Se a senha
+   tiver caracteres especiais, use a versão codificada para URL.
+4. Configure também `JWT_SECRET` com pelo menos 32 caracteres aleatórios.
+5. Execute `npm run migrate` para criar as tabelas. Para inserir os dados iniciais
+   e criar um administrador, configure `SEED_ADMIN_EMAIL` e `SEED_ADMIN_PASSWORD`
+   no `.env` e execute `npm run seed`.
+6. Inicie o backend com `npm run dev` e verifique `http://localhost:3000/health`.
+   Com a conexão ativa, a resposta inclui `"database":"connected"`.
 
-After configuring the database variables, apply the schema and starter data once:
+O servidor carrega `.env` automaticamente, testa a conexão antes de iniciar e
+encerra com erro se não conseguir conectar. Em produção, configure as variáveis no
+painel da hospedagem (por exemplo, **Environment** no Render), em vez de enviar o
+arquivo `.env`. TLS fica habilitado por padrão; não defina `DB_SSL=false` para o
+Supabase. Não compartilhe nem faça commit do `.env`, da senha do banco ou de chaves
+do Supabase.
 
-1. Run `npm run migrate`.
-2. Set `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD`, then run `npm run seed` to
-   create or update the initial super-admin account. The password is stored as a
-   bcrypt hash. These two seed variables are only needed when running the seed.
-
-The migration and seed scripts connect to the configured PostgreSQL database and
-execute the SQL files in `database/`. The seed creates reference data and starter
-survey questions; it does not create a default account unless the seed credentials
-are provided.
+Como alternativa à `DATABASE_URL`, também é possível configurar `DB_HOST`,
+`DB_PORT`, `DB_NAME`, `DB_USER` e `DB_PASSWORD`; não misture os dois formatos.
+Configure `CORS_ORIGIN` com a URL pública do frontend. O Render fornece `PORT`
+automaticamente.
 
 ## Estrutura
 
