@@ -19,6 +19,14 @@ Backend do Sistema de Gestão da Experiência do Paciente para a Fundação Hosp
 - `npm run migrate`
 - `npm run seed`
 
+### Preparar o banco pelo SQL Editor do Supabase
+
+Para apagar e recriar somente as tabelas deste sistema em uma única execução,
+abra `database/supabase-reset.sql`, copie todo o conteúdo e execute no **SQL
+Editor** do Supabase. O script também aplica o schema, as migrations e os dados
+iniciais; não cria uma conta de usuário/admin e não apaga dados do Supabase Auth
+nem do Storage. A limpeza das tabelas do SGEP é irreversível.
+
 ## Conectar ao Supabase
 
 O backend conecta ao PostgreSQL do Supabase usando `pg` (não precisa usar a chave
