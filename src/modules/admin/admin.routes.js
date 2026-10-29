@@ -35,7 +35,10 @@ const perguntaBaseSchema = z.object({
   todos_setores: z.boolean().optional().default(false),
   ordem: z.number().int().positive(), obrigatoria: z.boolean().optional().default(false), ativo: z.boolean().optional().default(true),
   opcoes: z.array(z.object({ valor: z.number().int(), rotulo: z.string().min(1), emoji: z.string().optional() })).optional().default([]),
-}).refine((p) => new Set(p.opcoes.map((option) => option.valor)).size === p.opcoes.length, { message: 'Os valores das opções não podem se repetir', path: ['opcoes'] })
+});
+
+const withPerguntaRules = (schema) => schema
+  .refine((p) => new Set(p.opcoes.map((option) => option.valor)).size === p.opcoes.length, { message: 'Os valores das opções não podem se repetir', path: ['opcoes'] })
   .refine((p) => p.geral
     ? p.setor_id == null && !p.todos_setores && p.tipo === 'nps' && p.obrigatoria
     : p.tipo !== 'nps' && (p.todos_setores ? p.setor_id == null : Number.isInteger(p.setor_id)), {
