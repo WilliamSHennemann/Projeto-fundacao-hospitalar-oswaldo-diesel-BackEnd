@@ -79,6 +79,10 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `GET /api/exportacoes/pdf?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
 - `GET /api/admin/perguntas`
 - `POST /api/admin/perguntas`
+- `GET /api/admin/setores`
+- `POST /api/admin/setores`
+- `PATCH /api/admin/setores/:id`
+- `DELETE /api/admin/setores/:id`
 - `PUT /api/admin/perguntas/:id`
 - `DELETE /api/admin/perguntas/:id`
 - `PATCH /api/admin/perguntas/reordenar`
@@ -105,6 +109,10 @@ Ao cadastrar setor por `POST /api/admin/setores`, o backend normaliza o slug e
 retorna `url: "/<slug>"` para o QR Code. O frontend deve tratar essa rota pública
 de forma genérica e buscar o fluxo em `GET /api/setores/:slug/fluxo`; assim, novos
 setores não precisam de rotas codificadas individualmente.
+
+Ao iniciar uma pesquisa, `POST /api/pesquisas` também aceita opcionalmente
+`data_atendimento` no formato `YYYY-MM-DD`. Esse campo guarda o dia informado
+pelo paciente, separado de `data_hora`, que registra automaticamente o envio.
 
 ### Segurança do fluxo público
 

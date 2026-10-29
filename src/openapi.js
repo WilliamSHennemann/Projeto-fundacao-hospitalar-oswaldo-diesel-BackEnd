@@ -182,6 +182,7 @@ export const openApiDocument = {
                   setor_id: { type: 'integer' },
                   anonimo: { type: 'boolean' },
                   consentimento: { type: 'boolean' },
+                  data_atendimento: { type: 'string', format: 'date', description: 'Dia em que o paciente foi atendido, no formato YYYY-MM-DD' },
                 },
               },
             },
@@ -395,6 +396,21 @@ export const openApiDocument = {
         responses: {
           '201': { description: 'Setor criado' },
         },
+      },
+    },
+    '/admin/setores/{id}': {
+      patch: {
+        summary: 'Atualiza parcialmente um setor; alterar o slug atualiza a URL pública e o QR Code',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { nome: { type: 'string' }, slug: { type: 'string' }, ativo: { type: 'boolean' } } } } } },
+        responses: { '200': { description: 'Setor atualizado' }, '400': { description: 'Dados inválidos' }, '404': { description: 'Setor não encontrado' }, '409': { description: 'Slug já utilizado' } },
+      },
+      delete: {
+        summary: 'Desativa um setor sem apagar pesquisas e histórico',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        responses: { '200': { description: 'Setor desativado' }, '404': { description: 'Setor não encontrado' } },
       },
     },
     '/admin/perfis': {

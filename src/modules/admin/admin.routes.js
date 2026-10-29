@@ -13,7 +13,23 @@ const setorSchema = z.object({
   ativo: z.boolean().optional().default(true),
 });
 
-const perguntaSchema = z.object({
+const setorPatchSchema = z.object({
+  nome: z.string().min(2).optional(),
+  slug: z.string().min(2).optional(),
+  ativo: z.boolean().optional(),
+}).refine((setor) => Object.keys(setor).length > 0, {
+  message: 'Informe ao menos um campo para atualizar',
+});
+
+const normalizeSetorSlug = (value) => value
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .trim()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-|-$/g, '');
+
+const perguntaBaseSchema = z.object({
   texto: z.string().min(3), tipo: z.enum(['rostinho', 'texto', 'multipla', 'nps']),
   setor_id: z.number().int().positive().nullable().optional(), geral: z.boolean().optional().default(false),
   todos_setores: z.boolean().optional().default(false),
@@ -25,6 +41,9 @@ const perguntaSchema = z.object({
     : p.tipo !== 'nps' && (p.todos_setores ? p.setor_id == null : Number.isInteger(p.setor_id)), {
     message: 'NPS deve ser geral e obrigatório; pergunta comum pode ser de todos os setores ou de um setor',
   });
+
+const perguntaSchema = withPerguntaRules(perguntaBaseSchema);
+const createPerguntaSchema = withPerguntaRules(perguntaBaseSchema.extend({ ordem: z.number().int().positive().optional() }));
 
 const perguntaWithOptions = async (client, perguntaId) => {
   const question = await client.query('SELECT * FROM pergunta WHERE id = $1', [perguntaId]);
@@ -82,9 +101,9 @@ router.get('/admin/perguntas', requireAuth, requireAnyPermission('super_admin', 
 }));
 
 router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res) => {
-  const parsed = perguntaSchema.safeParse(req.body);
+  const parsed = createPerguntaSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.error.flatten() });
-  const p = parsed.data;
+  let p = parsed.data;
   if (p.tipo === 'rostinho' && (p.opcoes.length !== 5 || p.opcoes.some((o, i) => o.valor !== i + 1))) return res.status(400).json({ erro: 'Pergunta rostinho precisa de opções de 1 a 5', codigo: 'OPTIONS_INVALID' });
   if (p.tipo === 'nps' && p.opcoes.length && (p.opcoes.length !== 11 || p.opcoes.some((o, i) => o.valor !== i))) return res.status(400).json({ erro: 'Opções NPS devem cobrir 0 a 10', codigo: 'OPTIONS_INVALID' });
   if (databaseConfigured) {
@@ -110,6 +129,11 @@ router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res)
       return res.status(201).json(body);
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
+  if (p.ordem === undefined && !p.geral) {
+    const nextOrder = Math.max(0, ...appStore.perguntas.filter((q) => q.ativo && !q.geral && q.setor_id === p.setor_id).map((q) => q.ordem)) + 1;
+    p = { ...p, ordem: nextOrder };
+  }
+  if (p.ordem === undefined) p = { ...p, ordem: 1 };
   if (p.geral && appStore.perguntas.some((q) => q.geral && q.ativo)) return res.status(409).json({ erro: 'Já existe uma pergunta NPS geral ativa', codigo: 'NPS_EXISTS' });
   if (!p.geral && !p.todos_setores && p.ativo && appStore.perguntas.some((q) => q.ativo && !q.geral && !q.todos_setores && q.setor_id === p.setor_id && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' });
   if (p.todos_setores && p.ativo && appStore.perguntas.some((q) => q.ativo && q.todos_setores && !q.geral && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta compartilhada', codigo: 'ORDER_CONFLICT' });
@@ -202,13 +226,7 @@ router.post('/admin/setores', requireAuth, requirePermission('super_admin'), asy
     return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
   }
 
-  const slug = (payload.data.slug ?? payload.data.nome)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
+  const slug = normalizeSetorSlug(payload.data.slug ?? payload.data.nome);
   if (slug.length < 2) return res.status(400).json({ erro: 'Nome ou slug inválido', codigo: 'VALIDATION_ERROR' });
   if (!databaseConfigured && appStore.setores.some((item) => item.slug === slug)) return res.status(409).json({ erro: 'Já existe um setor com este slug', codigo: 'SETOR_SLUG_CONFLICT' });
   if (databaseConfigured) {
@@ -238,6 +256,64 @@ router.post('/admin/setores', requireAuth, requirePermission('super_admin'), asy
 
   appStore.setores.push(setor);
   return res.status(201).json(setor);
+}));
+
+router.patch('/admin/setores/:id', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ erro: 'ID do setor inválido', codigo: 'VALIDATION_ERROR' });
+  const payload = setorPatchSchema.safeParse(req.body);
+  if (!payload.success) return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
+
+  const changes = payload.data;
+  const slug = changes.slug === undefined ? undefined : normalizeSetorSlug(changes.slug);
+  if (slug !== undefined && slug.length < 2) return res.status(400).json({ erro: 'Slug inválido', codigo: 'VALIDATION_ERROR' });
+
+  if (databaseConfigured) {
+    try {
+      const result = await query(
+        `UPDATE setor
+         SET nome = COALESCE($2, nome),
+             slug = COALESCE($3, slug),
+             url = CASE WHEN $3::text IS NULL THEN url ELSE '/' || $3 END,
+             qrcode = CASE WHEN $3::text IS NULL THEN qrcode ELSE 'qr-' || $3 END,
+             ativo = COALESCE($4, ativo)
+         WHERE id = $1
+         RETURNING *`,
+        [id, changes.nome ?? null, slug ?? null, changes.ativo ?? null],
+      );
+      if (!result.rowCount) return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
+      return res.json(result.rows[0]);
+    } catch (error) {
+      if (error.code === '23505') return res.status(409).json({ erro: 'Já existe um setor com este slug', codigo: 'SETOR_SLUG_CONFLICT' });
+      throw error;
+    }
+  }
+
+  const setor = appStore.setores.find((item) => item.id === id);
+  if (!setor) return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
+  if (slug !== undefined && appStore.setores.some((item) => item.id !== id && item.slug === slug)) return res.status(409).json({ erro: 'Já existe um setor com este slug', codigo: 'SETOR_SLUG_CONFLICT' });
+  if (changes.nome !== undefined) setor.nome = changes.nome;
+  if (slug !== undefined) {
+    setor.slug = slug;
+    setor.url = `/${slug}`;
+    setor.qrcode = `qr-${slug}`;
+  }
+  if (changes.ativo !== undefined) setor.ativo = changes.ativo;
+  return res.json(setor);
+}));
+
+router.delete('/admin/setores/:id', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ erro: 'ID do setor inválido', codigo: 'VALIDATION_ERROR' });
+  if (databaseConfigured) {
+    const result = await query('UPDATE setor SET ativo = FALSE WHERE id = $1 RETURNING *', [id]);
+    if (!result.rowCount) return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
+    return res.json(result.rows[0]);
+  }
+  const setor = appStore.setores.find((item) => item.id === id);
+  if (!setor) return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
+  setor.ativo = false;
+  return res.json(setor);
 }));
 
 router.get('/admin/perfis', requireAuth, requirePermission('super_admin'), asyncHandler(async (_req, res) => {

@@ -8,10 +8,17 @@ import { randomBytes } from 'node:crypto';
 
 const router = Router();
 
+const isValidIsoDate = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+
 const createPesquisaSchema = z.object({
   setor_id: z.number().int().positive(),
   anonimo: z.boolean().optional().default(false),
   consentimento: z.boolean().optional().default(false),
+  data_atendimento: z.string().refine(isValidIsoDate, { message: 'Use uma data válida no formato YYYY-MM-DD' }).optional(),
 });
 
 const respostaSchema = z.object({
@@ -183,7 +190,7 @@ router.post('/pesquisas', asyncHandler(async (req, res) => {
 
     const token = randomBytes(24).toString('hex');
     const result = await query(
-      `INSERT INTO pesquisa (setor_id, turno, anonimo, consentimento, status, token)
+      `INSERT INTO pesquisa (setor_id, turno, anonimo, consentimento, data_atendimento, status, token)
        VALUES (
          $1,
          CASE
@@ -191,10 +198,10 @@ router.post('/pesquisas', asyncHandler(async (req, res) => {
            WHEN EXTRACT(HOUR FROM NOW() AT TIME ZONE 'America/Sao_Paulo') < 18 THEN 'tarde'
            ELSE 'noite'
          END,
-         $2, $3, 'em_andamento', $4
+         $2, $3, $4, 'em_andamento', $5
        )
        RETURNING id, token`,
-      [setorDb.id, payload.data.anonimo, payload.data.consentimento, token],
+      [setorDb.id, payload.data.anonimo, payload.data.consentimento, payload.data.data_atendimento ?? null, token],
     );
     return res.status(201).json({ pesquisa_id: result.rows[0].id, token: result.rows[0].token, setor: setorDb.slug });
   }
@@ -209,6 +216,7 @@ router.post('/pesquisas', asyncHandler(async (req, res) => {
     setor_id: setor.id,
     paciente_id: null,
     data_hora: new Date().toISOString(),
+    data_atendimento: payload.data.data_atendimento ?? null,
     turno: 'manha',
     anonimo: payload.data.anonimo,
     consentimento: payload.data.consentimento,
