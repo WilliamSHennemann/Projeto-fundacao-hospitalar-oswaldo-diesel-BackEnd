@@ -110,6 +110,19 @@ router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res)
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      if (p.ordem === undefined) {
+        if (p.geral) {
+          p = { ...p, ordem: 1 };
+        } else {
+          // Serializa a escolha da próxima ordem para evitar colisões em criações simultâneas.
+          const scopeId = p.todos_setores ? 0 : p.setor_id;
+          await client.query('SELECT pg_advisory_xact_lock($1, $2)', [7101, scopeId]);
+          const nextOrder = p.todos_setores
+            ? await client.query('SELECT COALESCE(MAX(ordem), 0) + 1 AS ordem FROM pergunta WHERE todos_setores = TRUE AND geral = FALSE AND ativo = TRUE')
+            : await client.query('SELECT COALESCE(MAX(ordem), 0) + 1 AS ordem FROM pergunta WHERE setor_id = $1 AND geral = FALSE AND todos_setores = FALSE AND ativo = TRUE', [p.setor_id]);
+          p = { ...p, ordem: Number(nextOrder.rows[0].ordem) };
+        }
+      }
       if (!p.geral && !p.todos_setores && p.ativo) {
         const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE setor_id = $1 AND ordem = $2 AND ativo = TRUE AND geral = FALSE AND todos_setores = FALSE', [p.setor_id, p.ordem]);
         if (duplicateOrder.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' }); }
