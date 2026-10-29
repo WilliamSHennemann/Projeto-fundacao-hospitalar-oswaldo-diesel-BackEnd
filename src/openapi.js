@@ -369,7 +369,7 @@ export const openApiDocument = {
       post: {
         summary: 'Cria uma pergunta',
         security: [{ bearerAuth: [] }],
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['texto', 'tipo', 'ordem'], properties: { texto: { type: 'string' }, tipo: { type: 'string', enum: ['rostinho', 'texto', 'multipla', 'nps'] }, setor_id: { type: 'integer', nullable: true }, geral: { type: 'boolean' }, ordem: { type: 'integer' }, obrigatoria: { type: 'boolean' }, ativo: { type: 'boolean' }, opcoes: { type: 'array', items: { type: 'object', properties: { valor: { type: 'integer' }, rotulo: { type: 'string' }, emoji: { type: 'string' } } } } } } } } },
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['texto', 'tipo'], properties: { texto: { type: 'string' }, tipo: { type: 'string', enum: ['rostinho', 'texto', 'multipla', 'nps'] }, setor_id: { type: 'integer', nullable: true }, geral: { type: 'boolean' }, ordem: { type: 'integer', description: 'Opcional ao criar; se ausente, o backend usa a próxima ordem do setor.' }, obrigatoria: { type: 'boolean' }, ativo: { type: 'boolean' }, opcoes: { type: 'array', items: { type: 'object', properties: { valor: { type: 'integer' }, rotulo: { type: 'string' }, emoji: { type: 'string' } } } } } } } } },
         responses: { '201': { description: 'Pergunta criada' }, '400': { description: 'Dados inválidos' }, '409': { description: 'Pergunta NPS geral já existe' } },
       },
     },

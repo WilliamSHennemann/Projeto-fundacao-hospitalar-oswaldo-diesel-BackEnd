@@ -31,6 +31,16 @@ describe('admin question management', () => {
     expect(response.body.url).toBe('/centro-de-tomografia');
   });
 
+  it('assigns the next sector order when creating a question without ordem', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const response = await request(app).post('/api/admin/perguntas').set('Authorization', `Bearer ${login.body.token}`).send({
+      setor_id: 1, texto: 'Como avalia o conforto?', tipo: 'texto', obrigatoria: false,
+    });
+    expect(response.status).toBe(201);
+    createdQuestionId = response.body.id;
+    expect(response.body.ordem).toBe(2);
+  });
+
   it('updates a sector and logically deletes it without changing its URL when only the name changes', async () => {
     const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
     const auth = { Authorization: `Bearer ${login.body.token}` };

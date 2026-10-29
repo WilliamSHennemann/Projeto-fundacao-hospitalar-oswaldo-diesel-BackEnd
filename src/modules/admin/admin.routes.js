@@ -29,13 +29,19 @@ const normalizeSetorSlug = (value) => value
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '');
 
-const perguntaSchema = z.object({
+const perguntaBaseSchema = z.object({
   texto: z.string().min(3), tipo: z.enum(['rostinho', 'texto', 'multipla', 'nps']),
   setor_id: z.number().int().positive().nullable().optional(), geral: z.boolean().optional().default(false),
   ordem: z.number().int().positive(), obrigatoria: z.boolean().optional().default(false), ativo: z.boolean().optional().default(true),
   opcoes: z.array(z.object({ valor: z.number().int(), rotulo: z.string().min(1), emoji: z.string().optional() })).optional().default([]),
-}).refine((p) => new Set(p.opcoes.map((option) => option.valor)).size === p.opcoes.length, { message: 'Os valores das opções não podem se repetir', path: ['opcoes'] })
+});
+
+const withPerguntaRules = (schema) => schema
+  .refine((p) => new Set(p.opcoes.map((option) => option.valor)).size === p.opcoes.length, { message: 'Os valores das opções não podem se repetir', path: ['opcoes'] })
   .refine((p) => p.geral ? p.setor_id == null && p.tipo === 'nps' && p.obrigatoria : Number.isInteger(p.setor_id) && p.tipo !== 'nps', { message: 'Pergunta geral deve ser NPS obrigatória; pergunta normal precisa de setor e não pode ser NPS' });
+
+const perguntaSchema = withPerguntaRules(perguntaBaseSchema);
+const createPerguntaSchema = withPerguntaRules(perguntaBaseSchema.extend({ ordem: z.number().int().positive().optional() }));
 
 const perguntaWithOptions = async (client, perguntaId) => {
   const question = await client.query('SELECT * FROM pergunta WHERE id = $1', [perguntaId]);
@@ -85,15 +91,21 @@ router.get('/admin/perguntas', requireAuth, requireAnyPermission('super_admin', 
 }));
 
 router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res) => {
-  const parsed = perguntaSchema.safeParse(req.body);
+  const parsed = createPerguntaSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.error.flatten() });
-  const p = parsed.data;
+  let p = parsed.data;
   if (p.tipo === 'rostinho' && (p.opcoes.length !== 5 || p.opcoes.some((o, i) => o.valor !== i + 1))) return res.status(400).json({ erro: 'Pergunta rostinho precisa de opções de 1 a 5', codigo: 'OPTIONS_INVALID' });
   if (p.tipo === 'nps' && p.opcoes.length && (p.opcoes.length !== 11 || p.opcoes.some((o, i) => o.valor !== i))) return res.status(400).json({ erro: 'Opções NPS devem cobrir 0 a 10', codigo: 'OPTIONS_INVALID' });
   if (databaseConfigured) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      if (p.ordem === undefined && !p.geral) {
+        await client.query('SELECT id FROM setor WHERE id = $1 FOR UPDATE', [p.setor_id]);
+        const nextOrder = await client.query('SELECT COALESCE(MAX(ordem), 0) + 1 AS ordem FROM pergunta WHERE setor_id = $1 AND ativo = TRUE AND geral = FALSE', [p.setor_id]);
+        p = { ...p, ordem: Number(nextOrder.rows[0].ordem) };
+      }
+      if (p.ordem === undefined) p = { ...p, ordem: 1 };
       if (!p.geral && p.ativo) {
         const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE setor_id = $1 AND ordem = $2 AND ativo = TRUE AND geral = FALSE', [p.setor_id, p.ordem]);
         if (duplicateOrder.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' }); }
@@ -109,6 +121,11 @@ router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res)
       return res.status(201).json(body);
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
+  if (p.ordem === undefined && !p.geral) {
+    const nextOrder = Math.max(0, ...appStore.perguntas.filter((q) => q.ativo && !q.geral && q.setor_id === p.setor_id).map((q) => q.ordem)) + 1;
+    p = { ...p, ordem: nextOrder };
+  }
+  if (p.ordem === undefined) p = { ...p, ordem: 1 };
   if (p.geral && appStore.perguntas.some((q) => q.geral && q.ativo)) return res.status(409).json({ erro: 'Já existe uma pergunta NPS geral ativa', codigo: 'NPS_EXISTS' });
   if (!p.geral && p.ativo && appStore.perguntas.some((q) => q.ativo && !q.geral && q.setor_id === p.setor_id && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' });
   const { opcoes, ...questionData } = p;
