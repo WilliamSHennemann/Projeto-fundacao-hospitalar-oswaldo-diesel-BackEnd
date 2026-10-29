@@ -77,6 +77,10 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `GET /api/dashboard/resumo?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
 - `GET /api/admin/perguntas`
 - `POST /api/admin/perguntas`
+- `GET /api/admin/setores`
+- `POST /api/admin/setores`
+- `PATCH /api/admin/setores/:id`
+- `DELETE /api/admin/setores/:id`
 - `PUT /api/admin/perguntas/:id`
 - `DELETE /api/admin/perguntas/:id`
 - `PATCH /api/admin/perguntas/reordenar`

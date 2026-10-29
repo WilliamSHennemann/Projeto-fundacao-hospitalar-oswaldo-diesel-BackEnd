@@ -31,6 +31,27 @@ describe('admin question management', () => {
     expect(response.body.url).toBe('/centro-de-tomografia');
   });
 
+  it('updates a sector and logically deletes it without changing its URL when only the name changes', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const auth = { Authorization: `Bearer ${login.body.token}` };
+    const created = await request(app).post('/api/admin/setores').set(auth).send({ nome: 'Centro de Tomografia' });
+    createdSectorId = created.body.id;
+
+    const renamed = await request(app).patch(`/api/admin/setores/${createdSectorId}`).set(auth).send({ nome: 'Tomografia' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.nome).toBe('Tomografia');
+    expect(renamed.body.slug).toBe('centro-de-tomografia');
+    expect(renamed.body.url).toBe('/centro-de-tomografia');
+
+    const reSlugged = await request(app).patch(`/api/admin/setores/${createdSectorId}`).set(auth).send({ slug: 'tomografia-principal' });
+    expect(reSlugged.status).toBe(200);
+    expect(reSlugged.body.url).toBe('/tomografia-principal');
+
+    const deleted = await request(app).delete(`/api/admin/setores/${createdSectorId}`).set(auth);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.ativo).toBe(false);
+  });
+
   it('creates, lists, edits, reorders and logically deletes a question', async () => {
     const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
     const auth = { Authorization: `Bearer ${login.body.token}` };
