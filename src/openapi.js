@@ -182,6 +182,7 @@ export const openApiDocument = {
                   setor_id: { type: 'integer' },
                   anonimo: { type: 'boolean' },
                   consentimento: { type: 'boolean' },
+                  data_atendimento: { type: 'string', format: 'date', description: 'Dia em que o paciente foi atendido, no formato YYYY-MM-DD' },
                 },
               },
             },

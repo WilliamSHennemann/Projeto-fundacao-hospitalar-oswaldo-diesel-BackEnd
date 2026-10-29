@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import app from '../../app.js';
+import { appStore } from '../../shared/store.js';
 
 describe('public survey endpoints', () => {
   it('lists active sectors', async () => {
@@ -11,12 +12,19 @@ describe('public survey endpoints', () => {
   });
 
   it('creates a survey and blocks finalization without nps', async () => {
-    const create = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: false, consentimento: true });
+    const create = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: false, consentimento: true, data_atendimento: '2026-10-20' });
     expect(create.status).toBe(201);
+    expect(appStore.pesquisas.find((pesquisa) => pesquisa.id === create.body.pesquisa_id)?.data_atendimento).toBe('2026-10-20');
 
     const result = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/finalizar`).set('X-Pesquisa-Token', create.body.token);
     expect(result.status).toBe(422);
     expect(result.body.codigo).toBe('NPS_REQUIRED');
+  });
+
+  it('rejects an invalid attendance date', async () => {
+    const response = await request(app).post('/api/pesquisas').send({ setor_id: 1, data_atendimento: '2026-02-30' });
+    expect(response.status).toBe(400);
+    expect(response.body.codigo).toBe('VALIDATION_ERROR');
   });
 
   it('accepts a valid nps response and finalizes the survey successfully', async () => {

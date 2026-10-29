@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS pesquisa (
   setor_id INTEGER NOT NULL REFERENCES setor(id) ON DELETE CASCADE,
   paciente_id INTEGER NULL REFERENCES paciente(id) ON DELETE SET NULL,
   data_hora TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  data_atendimento DATE NULL,
   turno VARCHAR(10) NOT NULL CHECK (turno IN ('manha', 'tarde', 'noite')),
   anonimo BOOLEAN NOT NULL DEFAULT FALSE,
   consentimento BOOLEAN NOT NULL DEFAULT FALSE,

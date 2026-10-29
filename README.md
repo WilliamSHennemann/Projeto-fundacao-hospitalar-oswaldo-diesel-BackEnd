@@ -99,6 +99,10 @@ retorna `url: "/<slug>"` para o QR Code. O frontend deve tratar essa rota públi
 de forma genérica e buscar o fluxo em `GET /api/setores/:slug/fluxo`; assim, novos
 setores não precisam de rotas codificadas individualmente.
 
+Ao iniciar uma pesquisa, `POST /api/pesquisas` também aceita opcionalmente
+`data_atendimento` no formato `YYYY-MM-DD`. Esse campo guarda o dia informado
+pelo paciente, separado de `data_hora`, que registra automaticamente o envio.
+
 ### Segurança do fluxo público
 
 `POST /api/pesquisas` retorna `pesquisa_id` e `token`. Envie esse token no cabeçalho
