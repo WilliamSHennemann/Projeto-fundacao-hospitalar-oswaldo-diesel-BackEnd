@@ -60,7 +60,7 @@ export const requireAuth = asyncHandler(async (req, _res, next) => {
   if (databaseConfigured) {
     const result = await query(
       `SELECT u.id, u.nome, u.email, u.setor_id, u.ativo,
-              COALESCE(p.permissoes->'roles', '[]'::json) AS permissoes
+              COALESCE(p.permissoes->'roles', '[]'::jsonb) AS permissoes
        FROM usuario u
        JOIN perfil p ON p.id = u.perfil_id
        WHERE u.id = $1 AND u.ativo = TRUE`,
@@ -132,7 +132,7 @@ router.post('/auth/login', asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const result = await query(
       `SELECT u.id, u.nome, u.email, u.setor_id, u.ativo, u.senha_hash,
-              COALESCE(p.permissoes->'roles', '[]'::json) AS permissoes
+              COALESCE(p.permissoes->'roles', '[]'::jsonb) AS permissoes
        FROM usuario u
        JOIN perfil p ON p.id = u.perfil_id
        WHERE LOWER(u.email) = LOWER($1) AND u.ativo = TRUE`,

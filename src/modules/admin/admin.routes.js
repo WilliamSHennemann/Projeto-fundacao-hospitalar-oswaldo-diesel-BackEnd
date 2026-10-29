@@ -344,7 +344,7 @@ router.get('/admin/usuarios', requireAuth, requirePermission('super_admin'), asy
   if (databaseConfigured) {
     const result = await query(
       `SELECT u.id, u.nome, u.email, u.perfil_id, u.setor_id, u.ativo,
-              COALESCE(p.permissoes->'roles', '[]'::json) AS permissoes
+              COALESCE(p.permissoes->'roles', '[]'::jsonb) AS permissoes
        FROM usuario u JOIN perfil p ON p.id = u.perfil_id
        ORDER BY u.id`,
     );
