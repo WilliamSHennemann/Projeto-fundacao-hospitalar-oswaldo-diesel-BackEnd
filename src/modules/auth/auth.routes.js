@@ -104,6 +104,24 @@ export const requireAnyPermission = (...permissions) => (req, _res, next) => {
   return next(new AppError('PermissÃ£o insuficiente', 403, 'FORBIDDEN'));
 };
 
+export const enforceUserSectorScope = (req, _res, next) => {
+  const permissions = new Set(req.user?.permissoes ?? []);
+  if (!permissions.has('gestao') || permissions.has('super_admin')) return next();
+
+  const sectorId = Number(req.user.setor_id);
+  if (!Number.isInteger(sectorId) || sectorId < 1) {
+    return next(new AppError('Usuário de gestão precisa estar vinculado a um setor', 403, 'SECTOR_REQUIRED'));
+  }
+
+  const requestedSectors = [req.query?.setor_id, req.params?.id].filter((value) => value !== undefined);
+  if (requestedSectors.some((requestedSector) => Number(requestedSector) !== sectorId)) {
+    return next(new AppError('Acesso permitido somente ao setor vinculado ao usuário', 403, 'SECTOR_FORBIDDEN'));
+  }
+
+  if (req.query) req.query.setor_id = String(sectorId);
+  next();
+};
+
 router.post('/auth/login', asyncHandler(async (req, res) => {
   const payload = loginSchema.safeParse(req.body);
   if (!payload.success) {

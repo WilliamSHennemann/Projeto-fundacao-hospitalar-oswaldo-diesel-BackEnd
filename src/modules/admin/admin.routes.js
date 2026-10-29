@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { appStore } from '../../shared/store.js';
 import { AppError } from '../../shared/errors.js';
-import { requireAuth, requireAnyPermission, requirePermission } from '../auth/auth.routes.js';
+import { requireAuth, requireAnyPermission, requirePermission, enforceUserSectorScope } from '../auth/auth.routes.js';
 import { asyncHandler, databaseConfigured, pool, query } from '../../config/database.js';
 
 const router = Router();
@@ -16,10 +16,15 @@ const setorSchema = z.object({
 const perguntaSchema = z.object({
   texto: z.string().min(3), tipo: z.enum(['rostinho', 'texto', 'multipla', 'nps']),
   setor_id: z.number().int().positive().nullable().optional(), geral: z.boolean().optional().default(false),
+  todos_setores: z.boolean().optional().default(false),
   ordem: z.number().int().positive(), obrigatoria: z.boolean().optional().default(false), ativo: z.boolean().optional().default(true),
   opcoes: z.array(z.object({ valor: z.number().int(), rotulo: z.string().min(1), emoji: z.string().optional() })).optional().default([]),
 }).refine((p) => new Set(p.opcoes.map((option) => option.valor)).size === p.opcoes.length, { message: 'Os valores das opções não podem se repetir', path: ['opcoes'] })
-  .refine((p) => p.geral ? p.setor_id == null && p.tipo === 'nps' && p.obrigatoria : Number.isInteger(p.setor_id) && p.tipo !== 'nps', { message: 'Pergunta geral deve ser NPS obrigatória; pergunta normal precisa de setor e não pode ser NPS' });
+  .refine((p) => p.geral
+    ? p.setor_id == null && !p.todos_setores && p.tipo === 'nps' && p.obrigatoria
+    : p.tipo !== 'nps' && (p.todos_setores ? p.setor_id == null : Number.isInteger(p.setor_id)), {
+    message: 'NPS deve ser geral e obrigatório; pergunta comum pode ser de todos os setores ou de um setor',
+  });
 
 const perguntaWithOptions = async (client, perguntaId) => {
   const question = await client.query('SELECT * FROM pergunta WHERE id = $1', [perguntaId]);
@@ -31,25 +36,32 @@ const perguntaWithOptions = async (client, perguntaId) => {
 const canManagePerguntas = asyncHandler(async (req, _res, next) => {
   if (req.params?.id && !/^[1-9]\d*$/.test(req.params.id)) return next(new AppError('ID da pergunta inválido', 400, 'VALIDATION_ERROR'));
   const permissions = new Set(req.user?.permissoes ?? []);
-  if (permissions.has('super_admin') || permissions.has('gestao')) return next();
-  if (!permissions.has('admin_setor') || !req.user?.setor_id) return next(new AppError('PermissÃ£o insuficiente', 403, 'FORBIDDEN'));
+  if (permissions.has('super_admin')) return next();
+  if ((!permissions.has('admin_setor') && !permissions.has('gestao')) || !req.user?.setor_id) return next(new AppError('PermissÃ£o insuficiente', 403, 'FORBIDDEN'));
   let setorId = Number(req.body?.setor_id ?? 0) || null;
   const questionId = Number(req.params?.id ?? 0);
-  if (!setorId && questionId) {
+  if (questionId) {
+    let existingQuestion;
     if (databaseConfigured) {
-      const result = await query('SELECT setor_id FROM pergunta WHERE id = $1 AND geral = FALSE', [questionId]);
-      setorId = result.rows[0]?.setor_id ?? null;
+      const result = await query('SELECT setor_id, geral, todos_setores FROM pergunta WHERE id = $1', [questionId]);
+      existingQuestion = result.rows[0];
     } else {
-      setorId = appStore.perguntas.find((item) => item.id === questionId && !item.geral)?.setor_id ?? null;
+      existingQuestion = appStore.perguntas.find((item) => item.id === questionId);
     }
+    if (existingQuestion?.geral || existingQuestion?.todos_setores) return next(new AppError('Perguntas compartilhadas só podem ser administradas pelo super administrador', 403, 'FORBIDDEN'));
+    if (existingQuestion && existingQuestion.setor_id !== req.user.setor_id) return next(new AppError('PermissÃ£o insuficiente para este setor', 403, 'FORBIDDEN'));
+    if (!setorId) setorId = existingQuestion?.setor_id ?? null;
+  }
+  if (req.body?.todos_setores || req.body?.geral) {
+    return next(new AppError('Perguntas compartilhadas só podem ser administradas pelo super administrador', 403, 'FORBIDDEN'));
   }
   if (req.path.endsWith('/reordenar')) {
     const entries = req.body?.perguntas;
     if (!Array.isArray(entries) || !entries.every((item) => item && Number.isInteger(Number(item.id)) && Number(item.id) > 0)) return next();
     const ids = entries.map((item) => Number(item.id));
     const allowed = databaseConfigured
-      ? (await query('SELECT id FROM pergunta WHERE id = ANY($1::int[]) AND setor_id = $2 AND geral = FALSE', [ids, req.user.setor_id])).rowCount === ids.length
-      : ids.length > 0 && ids.every((id) => appStore.perguntas.some((item) => item.id === id && item.setor_id === req.user.setor_id && !item.geral));
+      ? (await query('SELECT id FROM pergunta WHERE id = ANY($1::int[]) AND setor_id = $2 AND geral = FALSE AND todos_setores = FALSE', [ids, req.user.setor_id])).rowCount === ids.length
+      : ids.length > 0 && ids.every((id) => appStore.perguntas.some((item) => item.id === id && item.setor_id === req.user.setor_id && !item.geral && !item.todos_setores));
     if (!allowed) return next(new AppError('PermissÃ£o insuficiente para este setor', 403, 'FORBIDDEN'));
     return next();
   }
@@ -59,13 +71,14 @@ const canManagePerguntas = asyncHandler(async (req, _res, next) => {
 
 const perguntaAccess = [requireAuth, requireAnyPermission('super_admin', 'gestao', 'admin_setor'), canManagePerguntas];
 
-router.get('/admin/perguntas', requireAuth, requireAnyPermission('super_admin', 'gestao', 'admin_setor'), asyncHandler(async (req, res) => {
-  const scoped = req.user.permissoes?.includes('admin_setor') && !req.user.permissoes?.includes('super_admin') && !req.user.permissoes?.includes('gestao');
+router.get('/admin/perguntas', requireAuth, requireAnyPermission('super_admin', 'gestao', 'admin_setor'), enforceUserSectorScope, asyncHandler(async (req, res) => {
+  const scoped = !req.user.permissoes?.includes('super_admin')
+    && (req.user.permissoes?.includes('gestao') || req.user.permissoes?.includes('admin_setor'));
   if (databaseConfigured) {
-    const result = await query(`SELECT p.*, COALESCE(json_agg(json_build_object('id', o.id, 'pergunta_id', o.pergunta_id, 'valor', o.valor, 'rotulo', o.rotulo, 'emoji', o.emoji) ORDER BY o.valor) FILTER (WHERE o.id IS NOT NULL), '[]'::json) AS opcoes FROM pergunta p LEFT JOIN opcao_resposta o ON o.pergunta_id = p.id WHERE ($1::boolean = FALSE OR p.setor_id = $2) GROUP BY p.id ORDER BY p.geral, p.setor_id, p.ordem`, [scoped, req.user.setor_id ?? null]);
+    const result = await query(`SELECT p.*, COALESCE(json_agg(json_build_object('id', o.id, 'pergunta_id', o.pergunta_id, 'valor', o.valor, 'rotulo', o.rotulo, 'emoji', o.emoji) ORDER BY o.valor) FILTER (WHERE o.id IS NOT NULL), '[]'::json) AS opcoes FROM pergunta p LEFT JOIN opcao_resposta o ON o.pergunta_id = p.id WHERE ($1::boolean = FALSE OR p.setor_id = $2 OR p.todos_setores = TRUE) GROUP BY p.id ORDER BY p.geral, p.todos_setores, p.setor_id, p.ordem`, [scoped, req.user.setor_id ?? null]);
     return res.json(result.rows);
   }
-  res.json(appStore.perguntas.filter((p) => !scoped || p.setor_id === req.user.setor_id).map((p) => ({ ...p, opcoes: appStore.opcoesResposta.filter((o) => o.pergunta_id === p.id) })));
+  res.json(appStore.perguntas.filter((p) => !scoped || p.setor_id === req.user.setor_id || p.todos_setores).map((p) => ({ ...p, opcoes: appStore.opcoesResposta.filter((o) => o.pergunta_id === p.id) })));
 }));
 
 router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res) => {
@@ -78,15 +91,19 @@ router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res)
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      if (!p.geral && p.ativo) {
-        const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE setor_id = $1 AND ordem = $2 AND ativo = TRUE AND geral = FALSE', [p.setor_id, p.ordem]);
+      if (!p.geral && !p.todos_setores && p.ativo) {
+        const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE setor_id = $1 AND ordem = $2 AND ativo = TRUE AND geral = FALSE AND todos_setores = FALSE', [p.setor_id, p.ordem]);
         if (duplicateOrder.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' }); }
+      }
+      if (p.todos_setores && p.ativo) {
+        const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE todos_setores = TRUE AND geral = FALSE AND ordem = $1 AND ativo = TRUE', [p.ordem]);
+        if (duplicateOrder.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta compartilhada', codigo: 'ORDER_CONFLICT' }); }
       }
       if (p.geral) {
         const existing = await client.query('SELECT 1 FROM pergunta WHERE geral = TRUE AND ativo = TRUE FOR UPDATE');
         if (existing.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Já existe uma pergunta NPS geral ativa', codigo: 'NPS_EXISTS' }); }
       }
-      const inserted = await client.query(`INSERT INTO pergunta (hospital_id, setor_id, texto, tipo, geral, ordem, obrigatoria, ativo) VALUES (COALESCE((SELECT hospital_id FROM setor WHERE id = $1), 1), $1, $2, $3, $4, $5, $6, $7) RETURNING *`, [p.setor_id ?? null, p.texto, p.tipo, p.geral, p.ordem, p.obrigatoria, p.ativo]);
+      const inserted = await client.query(`INSERT INTO pergunta (hospital_id, setor_id, texto, tipo, geral, todos_setores, ordem, obrigatoria, ativo) VALUES (COALESCE((SELECT hospital_id FROM setor WHERE id = $1), (SELECT id FROM hospital ORDER BY id LIMIT 1), 1), $1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`, [p.setor_id ?? null, p.texto, p.tipo, p.geral, p.todos_setores, p.ordem, p.obrigatoria, p.ativo]);
       for (const option of p.opcoes) await client.query('INSERT INTO opcao_resposta (pergunta_id, valor, rotulo, emoji) VALUES ($1, $2, $3, $4)', [inserted.rows[0].id, option.valor, option.rotulo, option.emoji ?? null]);
       const body = await perguntaWithOptions(client, inserted.rows[0].id);
       await client.query('COMMIT');
@@ -94,7 +111,8 @@ router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res)
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
   if (p.geral && appStore.perguntas.some((q) => q.geral && q.ativo)) return res.status(409).json({ erro: 'Já existe uma pergunta NPS geral ativa', codigo: 'NPS_EXISTS' });
-  if (!p.geral && p.ativo && appStore.perguntas.some((q) => q.ativo && !q.geral && q.setor_id === p.setor_id && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' });
+  if (!p.geral && !p.todos_setores && p.ativo && appStore.perguntas.some((q) => q.ativo && !q.geral && !q.todos_setores && q.setor_id === p.setor_id && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' });
+  if (p.todos_setores && p.ativo && appStore.perguntas.some((q) => q.ativo && q.todos_setores && !q.geral && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta compartilhada', codigo: 'ORDER_CONFLICT' });
   const { opcoes, ...questionData } = p;
   const item = { id: Math.max(0, ...appStore.perguntas.map((q) => q.id)) + 1, hospital_id: 1, ...questionData };
   appStore.perguntas.push(item);
@@ -110,12 +128,16 @@ router.put('/admin/perguntas/:id', ...perguntaAccess, asyncHandler(async (req, r
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      if (!p.geral && p.ativo) {
-        const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE setor_id = $1 AND ordem = $2 AND ativo = TRUE AND geral = FALSE AND id <> $3', [p.setor_id, p.ordem, id]);
+      if (!p.geral && !p.todos_setores && p.ativo) {
+        const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE setor_id = $1 AND ordem = $2 AND ativo = TRUE AND geral = FALSE AND todos_setores = FALSE AND id <> $3', [p.setor_id, p.ordem, id]);
         if (duplicateOrder.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' }); }
       }
+      if (p.todos_setores && p.ativo) {
+        const duplicateOrder = await client.query('SELECT 1 FROM pergunta WHERE todos_setores = TRUE AND geral = FALSE AND ordem = $1 AND ativo = TRUE AND id <> $2', [p.ordem, id]);
+        if (duplicateOrder.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta compartilhada', codigo: 'ORDER_CONFLICT' }); }
+      }
       if (p.geral && p.ativo) { const exists = await client.query('SELECT 1 FROM pergunta WHERE geral = TRUE AND ativo = TRUE AND id <> $1 FOR UPDATE', [id]); if (exists.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Já existe uma pergunta NPS geral ativa', codigo: 'NPS_EXISTS' }); } }
-      const updated = await client.query('UPDATE pergunta SET setor_id=$2, texto=$3, tipo=$4, geral=$5, ordem=$6, obrigatoria=$7, ativo=$8 WHERE id=$1 RETURNING id', [id, p.setor_id ?? null, p.texto, p.tipo, p.geral, p.ordem, p.obrigatoria, p.ativo]);
+      const updated = await client.query('UPDATE pergunta SET setor_id=$2, texto=$3, tipo=$4, geral=$5, todos_setores=$6, ordem=$7, obrigatoria=$8, ativo=$9 WHERE id=$1 RETURNING id', [id, p.setor_id ?? null, p.texto, p.tipo, p.geral, p.todos_setores, p.ordem, p.obrigatoria, p.ativo]);
       if (!updated.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' }); }
       await client.query('DELETE FROM opcao_resposta WHERE pergunta_id=$1', [id]);
       for (const o of p.opcoes) await client.query('INSERT INTO opcao_resposta (pergunta_id,valor,rotulo,emoji) VALUES ($1,$2,$3,$4)', [id,o.valor,o.rotulo,o.emoji ?? null]);
@@ -123,7 +145,8 @@ router.put('/admin/perguntas/:id', ...perguntaAccess, asyncHandler(async (req, r
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   }
   const item = appStore.perguntas.find((q) => q.id === id); if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
-  if (!p.geral && p.ativo && appStore.perguntas.some((q) => q.id !== id && q.ativo && !q.geral && q.setor_id === p.setor_id && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' });
+  if (!p.geral && !p.todos_setores && p.ativo && appStore.perguntas.some((q) => q.id !== id && q.ativo && !q.geral && !q.todos_setores && q.setor_id === p.setor_id && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada neste setor', codigo: 'ORDER_CONFLICT' });
+  if (p.todos_setores && p.ativo && appStore.perguntas.some((q) => q.id !== id && q.ativo && q.todos_setores && !q.geral && q.ordem === p.ordem)) return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta compartilhada', codigo: 'ORDER_CONFLICT' });
   if (p.geral && p.ativo && appStore.perguntas.some((q) => q.id !== id && q.geral && q.ativo)) return res.status(409).json({ erro: 'Já existe uma pergunta NPS geral ativa', codigo: 'NPS_EXISTS' });
   const { opcoes, ...questionData } = p;
   Object.assign(item, questionData); appStore.opcoesResposta = appStore.opcoesResposta.filter((o) => o.pergunta_id !== id);
@@ -144,9 +167,9 @@ router.patch('/admin/perguntas/reordenar', ...perguntaAccess, asyncHandler(async
   if (databaseConfigured) { const client = await pool.connect(); try {
     await client.query('BEGIN');
     for (const item of items) {
-      const exists = await client.query('SELECT 1 FROM pergunta WHERE id=$1 AND geral=FALSE AND ativo=TRUE', [item.id]);
+      const exists = await client.query('SELECT 1 FROM pergunta WHERE id=$1 AND geral=FALSE AND todos_setores=FALSE AND ativo=TRUE', [item.id]);
       if (!exists.rowCount) { await client.query('ROLLBACK'); return res.status(400).json({ erro: `Pergunta ${item.id} inválida`, codigo: 'ORDER_INVALID' }); }
-      const conflict = await client.query('SELECT 1 FROM pergunta WHERE setor_id=(SELECT setor_id FROM pergunta WHERE id=$1) AND ordem=$2 AND ativo=TRUE AND geral=FALSE AND NOT (id=ANY($3::int[]))', [item.id, item.ordem, items.map((entry) => entry.id)]);
+      const conflict = await client.query('SELECT 1 FROM pergunta WHERE setor_id=(SELECT setor_id FROM pergunta WHERE id=$1) AND ordem=$2 AND ativo=TRUE AND geral=FALSE AND todos_setores=FALSE AND NOT (id=ANY($3::int[]))', [item.id, item.ordem, items.map((entry) => entry.id)]);
       if (conflict.rowCount) { await client.query('ROLLBACK'); return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta fora da lista', codigo: 'ORDER_CONFLICT' }); }
     }
     const ids = items.map((item) => item.id);
@@ -156,9 +179,9 @@ router.patch('/admin/perguntas/reordenar', ...perguntaAccess, asyncHandler(async
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); } }
   const selectedIds = new Set(items.map((item) => item.id));
   for (const item of items) {
-    const question = appStore.perguntas.find((q) => q.id === item.id && q.ativo && !q.geral);
+    const question = appStore.perguntas.find((q) => q.id === item.id && q.ativo && !q.geral && !q.todos_setores);
     if (!question) return res.status(400).json({ erro: `Pergunta ${item.id} inválida`, codigo: 'ORDER_INVALID' });
-    if (appStore.perguntas.some((q) => q.ativo && !q.geral && q.setor_id === question.setor_id && q.ordem === item.ordem && !selectedIds.has(q.id))) return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta fora da lista', codigo: 'ORDER_CONFLICT' });
+    if (appStore.perguntas.some((q) => q.ativo && !q.geral && !q.todos_setores && q.setor_id === question.setor_id && q.ordem === item.ordem && !selectedIds.has(q.id))) return res.status(409).json({ erro: 'Ordem já está sendo usada por uma pergunta fora da lista', codigo: 'ORDER_CONFLICT' });
   }
   for (const item of items) appStore.perguntas.find((q) => q.id === item.id).ordem = -item.id;
   for (const item of items) appStore.perguntas.find((q) => q.id === item.id).ordem = item.ordem;

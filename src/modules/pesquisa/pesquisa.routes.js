@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { appStore, getPesquisaById, getRespostaByPesquisaPergunta } from '../../shared/store.js';
-import { calculateAverage } from '../../shared/metrics.js';
+import { calculateAverage, sortQuestionsForFlow } from '../../shared/metrics.js';
 import { AppError } from '../../shared/errors.js';
 import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
 import { randomBytes } from 'node:crypto';
@@ -73,29 +73,30 @@ router.get('/setores/:slug', asyncHandler(async (req, res) => {
 router.get('/setores/:slug/fluxo', asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const result = await query(
-      `SELECT s.*, p.id AS pergunta_id, p.texto, p.tipo, p.geral, p.ordem,
+      `SELECT s.*, p.id AS pergunta_id, p.texto, p.tipo, p.geral, p.todos_setores, p.ordem,
               p.obrigatoria, p.ativo AS pergunta_ativa,
               COALESCE(json_agg(json_build_object(
                 'id', o.id, 'pergunta_id', o.pergunta_id, 'valor', o.valor,
                 'rotulo', o.rotulo, 'emoji', o.emoji
               ) ORDER BY o.id) FILTER (WHERE o.id IS NOT NULL), '[]'::json) AS opcoes
        FROM setor s
-       LEFT JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE)
+       LEFT JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE OR p.todos_setores = TRUE)
        LEFT JOIN opcao_resposta o ON o.pergunta_id = p.id
        WHERE s.slug = $1 AND s.ativo = TRUE
        GROUP BY s.id, p.id
-       ORDER BY p.geral, p.ordem`,
+       ORDER BY p.geral, p.todos_setores, p.ordem`,
       [req.params.slug],
     );
     if (!result.rowCount) throw new AppError('Setor não encontrado', 404, 'SETOR_NOT_FOUND');
     const setor = Object.fromEntries(Object.entries(result.rows[0]).filter(([key]) => ![
-      'pergunta_id', 'texto', 'tipo', 'geral', 'ordem', 'obrigatoria', 'pergunta_ativa', 'opcoes',
+      'pergunta_id', 'texto', 'tipo', 'geral', 'todos_setores', 'ordem', 'obrigatoria', 'pergunta_ativa', 'opcoes',
     ].includes(key)));
     const fluxo = result.rows.filter((row) => row.pergunta_id !== null).map((row, index) => ({
       id: row.pergunta_id,
       texto: row.texto,
       tipo: row.tipo,
       geral: row.geral,
+      todos_setores: row.todos_setores,
       ordem: row.ordem,
       numero: index + 1,
       url: `/pesquisa/${setor.slug}/pergunta/${index + 1}`,
@@ -108,18 +109,14 @@ router.get('/setores/:slug/fluxo', asyncHandler(async (req, res) => {
     throw new AppError('Setor não encontrado', 404, 'SETOR_NOT_FOUND');
   }
 
-  const fluxo = appStore.perguntas
-    .filter((pergunta) => pergunta.ativo && (pergunta.setor_id === setor.id || pergunta.geral))
-    .sort((a, b) => {
-      if (a.geral && !b.geral) return 1;
-      if (!a.geral && b.geral) return -1;
-      return a.ordem - b.ordem;
-    })
+  const fluxo = sortQuestionsForFlow(appStore.perguntas
+    .filter((pergunta) => pergunta.ativo && (pergunta.setor_id === setor.id || pergunta.geral || pergunta.todos_setores)))
     .map((pergunta, index) => ({
       id: pergunta.id,
       texto: pergunta.texto,
       tipo: pergunta.tipo,
       geral: pergunta.geral,
+      todos_setores: pergunta.todos_setores ?? false,
       ordem: pergunta.ordem,
       numero: index + 1,
       url: `/pesquisa/${setor.slug}/pergunta/${index + 1}`,
@@ -137,11 +134,11 @@ router.get('/setores/:slug/perguntas/:n', asyncHandler(async (req, res) => {
         'rotulo', o.rotulo, 'emoji', o.emoji
       ) ORDER BY o.id) FILTER (WHERE o.id IS NOT NULL), '[]'::json) AS opcoes
        FROM setor s
-       JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE)
+       JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE OR p.todos_setores = TRUE)
        LEFT JOIN opcao_resposta o ON o.pergunta_id = p.id
        WHERE s.slug = $1 AND s.ativo = TRUE
        GROUP BY s.id, p.id
-       ORDER BY p.geral, p.ordem`,
+       ORDER BY p.geral, p.todos_setores, p.ordem`,
       [req.params.slug],
     );
     if (!result.rowCount) throw new AppError('Setor ou pergunta não encontrado', 404, 'PERGUNTA_NOT_FOUND');
@@ -156,13 +153,8 @@ router.get('/setores/:slug/perguntas/:n', asyncHandler(async (req, res) => {
     throw new AppError('Setor não encontrado', 404, 'SETOR_NOT_FOUND');
   }
 
-  const fluxo = appStore.perguntas
-    .filter((pergunta) => pergunta.ativo && (pergunta.setor_id === setor.id || pergunta.geral))
-    .sort((a, b) => {
-      if (a.geral && !b.geral) return 1;
-      if (!a.geral && b.geral) return -1;
-      return a.ordem - b.ordem;
-    });
+  const fluxo = sortQuestionsForFlow(appStore.perguntas
+    .filter((pergunta) => pergunta.ativo && (pergunta.setor_id === setor.id || pergunta.geral || pergunta.todos_setores)));
 
   const index = Number(req.params.n) - 1;
   const pergunta = fluxo[index];
@@ -245,7 +237,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
 
     const questionResult = await query(
       `SELECT * FROM pergunta
-       WHERE id = $1 AND ativo = TRUE AND (setor_id = $2 OR geral = TRUE)`,
+       WHERE id = $1 AND ativo = TRUE AND (setor_id = $2 OR geral = TRUE OR todos_setores = TRUE)`,
       [Number(req.params.perguntaId), pesquisaDb.setor_id],
     );
     const perguntaDb = questionResult.rows[0];
@@ -280,7 +272,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
     const next = await query(
       `SELECT s.slug, COUNT(p.id)::integer AS total
        FROM setor s
-       LEFT JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE)
+       LEFT JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE OR p.todos_setores = TRUE)
        WHERE s.id = $1
        GROUP BY s.id`,
       [pesquisaDb.setor_id],
@@ -302,7 +294,9 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
     throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
   }
 
-  const pergunta = appStore.perguntas.find((item) => item.id === Number(req.params.perguntaId));
+  const pergunta = appStore.perguntas.find((item) => item.id === Number(req.params.perguntaId)
+    && item.ativo
+    && (item.setor_id === pesquisa.setor_id || item.geral || item.todos_setores));
   if (!pergunta) {
     throw new AppError('Pergunta não encontrada', 404, 'PERGUNTA_NOT_FOUND');
   }
@@ -333,7 +327,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
 
   pesquisa.ultima_atividade = new Date().toISOString();
 
-  const totalPerguntas = appStore.perguntas.filter((item) => item.ativo && (item.setor_id === pesquisa.setor_id || item.geral)).length;
+  const totalPerguntas = appStore.perguntas.filter((item) => item.ativo && (item.setor_id === pesquisa.setor_id || item.geral || item.todos_setores)).length;
   const proximaPergunta = totalPerguntas > 0 ? `/pesquisa/${appStore.setores.find((setor) => setor.id === pesquisa.setor_id)?.slug ?? 'setor'}/pergunta/${Math.min(totalPerguntas, totalPerguntas)}` : null;
 
   return res.json({

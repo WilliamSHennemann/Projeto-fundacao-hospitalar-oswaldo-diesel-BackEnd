@@ -6,6 +6,7 @@ import { appStore } from '../../shared/store.js';
 let createdQuestionId;
 let temporaryUserId;
 let createdSectorId;
+let createdSurveyId;
 
 afterEach(() => {
   const firstQuestion = appStore.perguntas.find((item) => item.id === 1);
@@ -16,9 +17,14 @@ afterEach(() => {
   }
   if (temporaryUserId) appStore.usuarios = appStore.usuarios.filter((item) => item.id !== temporaryUserId);
   if (createdSectorId) appStore.setores = appStore.setores.filter((item) => item.id !== createdSectorId);
+  if (createdSurveyId) {
+    appStore.pesquisas = appStore.pesquisas.filter((item) => item.id !== createdSurveyId);
+    appStore.respostas = appStore.respostas.filter((item) => item.pesquisa_id !== createdSurveyId);
+  }
   createdQuestionId = undefined;
   temporaryUserId = undefined;
   createdSectorId = undefined;
+  createdSurveyId = undefined;
 });
 
 describe('admin question management', () => {
@@ -77,6 +83,67 @@ describe('admin question management', () => {
     expect(response.body.codigo).toBe('NPS_EXISTS');
   });
 
+  it('shares a common question across sectors and restricts its management to super admins', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const auth = { Authorization: `Bearer ${login.body.token}` };
+    const created = await request(app).post('/api/admin/perguntas').set(auth).send({
+      setor_id: null,
+      todos_setores: true,
+      texto: 'Como foi a limpeza do hospital?',
+      tipo: 'texto',
+      ordem: 1,
+      obrigatoria: false,
+    });
+    expect(created.status).toBe(201);
+    createdQuestionId = created.body.id;
+    expect(created.body.todos_setores).toBe(true);
+
+    const receptionFlow = await request(app).get('/api/setores/recepcao/fluxo');
+    const triageFlow = await request(app).get('/api/setores/triagem/fluxo');
+    expect(receptionFlow.body.fluxo.some((question) => question.id === createdQuestionId)).toBe(true);
+    expect(triageFlow.body.fluxo.some((question) => question.id === createdQuestionId)).toBe(true);
+
+    temporaryUserId = Math.max(0, ...appStore.usuarios.map((item) => item.id)) + 1;
+    appStore.usuarios.push({
+      id: temporaryUserId,
+      nome: 'Gestão Recepção',
+      email: 'gestao@test.local',
+      perfil_id: 3,
+      perfil: 'gestao',
+      setor_id: 1,
+      permissoes: ['gestao'],
+      ativo: true,
+    });
+    const { issueToken } = await import('../auth/auth.routes.js');
+    const managementToken = issueToken({
+      id: temporaryUserId,
+      email: 'gestao@test.local',
+      perfil: 'gestao',
+      permissoes: ['gestao'],
+      setor_id: 1,
+    });
+    const managementAuth = { Authorization: `Bearer ${managementToken}` };
+    const questions = await request(app).get('/api/admin/perguntas').set(managementAuth);
+    expect(questions.body.some((question) => question.id === createdQuestionId)).toBe(true);
+    const deniedEdit = await request(app).put(`/api/admin/perguntas/${createdQuestionId}`).set(managementAuth).send({
+      setor_id: null,
+      todos_setores: true,
+      texto: 'Edição não permitida',
+      tipo: 'texto',
+      ordem: 1,
+      obrigatoria: false,
+    });
+    expect(deniedEdit.status).toBe(403);
+
+    const survey = await request(app).post('/api/pesquisas').send({ setor_id: 2, anonimo: true });
+    createdSurveyId = survey.body.pesquisa_id;
+    const answer = await request(app)
+      .put(`/api/pesquisas/${createdSurveyId}/respostas/${createdQuestionId}`)
+      .set('X-Pesquisa-Token', survey.body.token)
+      .send({ pergunta_id: createdQuestionId, texto: 'Boa' });
+    expect(answer.status).toBe(200);
+  });
+
   it('limits an admin_setor to questions in the assigned sector', async () => {
     temporaryUserId = Math.max(0, ...appStore.usuarios.map((item) => item.id)) + 1;
     appStore.usuarios.push({ id: temporaryUserId, nome: 'Admin Setor', email: 'setor@test.local', perfil_id: 2, perfil: 'admin_setor', setor_id: 1, permissoes: ['admin_setor'], ativo: true });
@@ -89,5 +156,30 @@ describe('admin question management', () => {
     const denied = await request(app).post('/api/admin/perguntas').set(auth).send({ setor_id: 2, texto: 'Pergunta sem acesso', tipo: 'texto', ordem: 20, obrigatoria: false });
     expect(denied.status).toBe(403);
     expect(denied.body.codigo).toBe('FORBIDDEN');
+    const deniedMove = await request(app).put('/api/admin/perguntas/2').set(auth).send({
+      setor_id: 1,
+      texto: 'Tentativa de mover pergunta de outro setor',
+      tipo: 'rostinho',
+      ordem: 2,
+      obrigatoria: false,
+      opcoes: [
+        { valor: 1, rotulo: 'Muito ruim' }, { valor: 2, rotulo: 'Ruim' }, { valor: 3, rotulo: 'Neutro' },
+        { valor: 4, rotulo: 'Bom' }, { valor: 5, rotulo: 'Muito bom' },
+      ],
+    });
+    expect(deniedMove.status).toBe(403);
+    const deniedNpsEdit = await request(app).put('/api/admin/perguntas/7').set(auth).send({
+      setor_id: 1,
+      geral: false,
+      texto: 'Tentativa de editar o NPS global',
+      tipo: 'rostinho',
+      ordem: 2,
+      obrigatoria: false,
+      opcoes: [
+        { valor: 1, rotulo: 'Muito ruim' }, { valor: 2, rotulo: 'Ruim' }, { valor: 3, rotulo: 'Neutro' },
+        { valor: 4, rotulo: 'Bom' }, { valor: 5, rotulo: 'Muito bom' },
+      ],
+    });
+    expect(deniedNpsEdit.status).toBe(403);
   });
 });

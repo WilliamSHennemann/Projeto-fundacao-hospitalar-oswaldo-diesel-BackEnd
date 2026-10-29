@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { appStore } from '../../shared/store.js';
 import { calculateAverage, calculateNps } from '../../shared/metrics.js';
 import { AppError } from '../../shared/errors.js';
-import { requireAuth, requireAnyPermission } from '../auth/auth.routes.js';
+import { requireAuth, requireAnyPermission, enforceUserSectorScope } from '../auth/auth.routes.js';
 import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
 
 const router = Router();
@@ -44,9 +44,9 @@ function matchesFilters(pesquisa, filters) {
   return !filters.setor_id || pesquisa.setor_id === filters.setor_id;
 }
 
-const dashboardPermission = requireAnyPermission('super_admin', 'gestao', 'ouvidoria', 'visu');
+const dashboardPermission = [requireAnyPermission('super_admin', 'gestao', 'ouvidoria', 'visu'), enforceUserSectorScope];
 
-router.get('/dashboard/resumo', requireAuth, dashboardPermission, asyncHandler(async (req, res) => {
+router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
   const filters = parseFilters(req);
   if (databaseConfigured) {
     const where = dbWhere(filters);
@@ -78,7 +78,7 @@ router.get('/dashboard/resumo', requireAuth, dashboardPermission, asyncHandler(a
   });
 }));
 
-router.get('/dashboard/setores', requireAuth, dashboardPermission, asyncHandler(async (req, res) => {
+router.get('/dashboard/setores', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
   const filters = parseFilters(req);
   if (databaseConfigured) {
     const values = [];
@@ -102,7 +102,7 @@ router.get('/dashboard/setores', requireAuth, dashboardPermission, asyncHandler(
   return res.json(setores);
 }));
 
-router.get('/dashboard/setores/:id/turnos', requireAuth, dashboardPermission, asyncHandler(async (req, res) => {
+router.get('/dashboard/setores/:id/turnos', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
   const setorId = Number(req.params.id);
   if (!Number.isInteger(setorId) || setorId < 1) throw new AppError('ID do setor inválido', 400, 'VALIDATION_ERROR');
   const filters = parseFilters(req);
@@ -127,11 +127,11 @@ router.get('/dashboard/setores/:id/turnos', requireAuth, dashboardPermission, as
   }));
 }));
 
-router.get('/dashboard/equipes', requireAuth, dashboardPermission, (_req, res) => {
+router.get('/dashboard/equipes', requireAuth, ...dashboardPermission, (_req, res) => {
   res.json({ melhores: [], piores: [], resumo: 'Criação da equipe vinculada por setor, data e turno no módulo administrativo' });
 });
 
-router.get('/dashboard/em-andamento', requireAuth, dashboardPermission, asyncHandler(async (req, res) => {
+router.get('/dashboard/em-andamento', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
   const filters = parseFilters(req);
   if (databaseConfigured) {
     const where = dbWhere(filters);

@@ -52,4 +52,37 @@ describe('dashboard filters and permissions', () => {
     const admin = await request(app).get('/api/admin/perguntas').set('Authorization', `Bearer ${token}`);
     expect(admin.status).toBe(403);
   });
+
+  it('limits management dashboard data to the assigned sector', async () => {
+    temporaryUserId = Math.max(0, ...appStore.usuarios.map((item) => item.id)) + 1;
+    appStore.usuarios.push({
+      id: temporaryUserId,
+      nome: 'Gestão Recepção',
+      email: 'gestao-dashboard@test.local',
+      perfil_id: 3,
+      perfil: 'gestao',
+      setor_id: 1,
+      permissoes: ['gestao'],
+      ativo: true,
+    });
+    const { issueToken } = await import('../auth/auth.routes.js');
+    const token = issueToken({
+      id: temporaryUserId,
+      email: 'gestao-dashboard@test.local',
+      perfil: 'gestao',
+      permissoes: ['gestao'],
+      setor_id: 1,
+    });
+    const auth = { Authorization: `Bearer ${token}` };
+
+    const sectors = await request(app).get('/api/dashboard/setores').set(auth);
+    expect(sectors.status).toBe(200);
+    expect(sectors.body.map((sector) => sector.setor_id)).toEqual([1]);
+
+    const otherSector = await request(app).get('/api/dashboard/resumo?setor_id=2').set(auth);
+    expect(otherSector.status).toBe(403);
+    expect(otherSector.body.codigo).toBe('SECTOR_FORBIDDEN');
+    const otherSectorPath = await request(app).get('/api/dashboard/setores/2/turnos?setor_id=1').set(auth);
+    expect(otherSectorPath.status).toBe(403);
+  });
 });

@@ -19,14 +19,17 @@ export function calculateNps(scores) {
   return Number((((promoters - detractors) / valid.length) * 100).toFixed(1));
 }
 
-export function buildFlow(questions) {
-  const sorted = [...questions].sort((a, b) => {
-    if (a.geral && !b.geral) return 1;
-    if (!a.geral && b.geral) return -1;
+export function sortQuestionsForFlow(questions) {
+  return [...questions].sort((a, b) => {
+    const priorityA = a.geral ? 2 : a.todos_setores ? 1 : 0;
+    const priorityB = b.geral ? 2 : b.todos_setores ? 1 : 0;
+    if (priorityA !== priorityB) return priorityA - priorityB;
     return a.ordem - b.ordem;
   });
+}
 
-  return sorted.map((question, index) => ({
+export function buildFlow(questions) {
+  return sortQuestionsForFlow(questions).map((question, index) => ({
     ...question,
     numero: index + 1,
     url: `/pesquisa/${question.id}/pergunta/${index + 1}`,

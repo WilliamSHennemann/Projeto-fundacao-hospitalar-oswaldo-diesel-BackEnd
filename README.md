@@ -75,6 +75,8 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `POST /api/pesquisas/:id/finalizar`
 - `GET /api/dashboard/resumo`
 - `GET /api/dashboard/resumo?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
+- `GET /api/exportacoes/excel?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
+- `GET /api/exportacoes/pdf?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
 - `GET /api/admin/perguntas`
 - `POST /api/admin/perguntas`
 - `PUT /api/admin/perguntas/:id`
@@ -85,10 +87,19 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 
 O dashboard aceita `inicio`, `fim` e `setor_id` em `/dashboard/resumo`,
 `/dashboard/setores`, `/dashboard/setores/:id/turnos` e `/dashboard/em-andamento`.
-Os papéis `super_admin` e `gestao` podem administrar perguntas; `admin_setor`
-fica limitado às perguntas do seu setor. `visualizador`, `ouvidoria`, `gestao` e
-`super_admin` podem consultar o dashboard; apenas `ouvidoria` e `super_admin`
-podem consultar ou atualizar manifestações.
+`super_admin` pode administrar perguntas de qualquer setor. `gestao` e
+`admin_setor` ficam limitados ao setor associado à conta; a Gestão também tem
+seus filtros de dashboard e exportação fixados nesse setor. Para uma pergunta
+comum aparecer em todos os setores, crie-a como super administrador com
+`todos_setores: true` e `setor_id: null`; esse campo corresponde à opção
+"todos os setores" do formulário. O NPS geral continua usando `geral: true`.
+`visualizador`, `ouvidoria`, `gestao` e `super_admin` podem consultar o dashboard;
+apenas `ouvidoria` e `super_admin` podem consultar ou atualizar manifestações.
+
+As rotas `/api/exportacoes/excel` e `/api/exportacoes/pdf` retornam arquivos
+baixáveis `.xlsx` e `.pdf`, com total de pesquisas, média das avaliações e NPS
+por setor. Aceitam os filtros `inicio`, `fim` e `setor_id`; a Gestão recebe
+somente os dados do setor vinculado à sua conta.
 
 Ao cadastrar setor por `POST /api/admin/setores`, o backend normaliza o slug e
 retorna `url: "/<slug>"` para o QR Code. O frontend deve tratar essa rota pública

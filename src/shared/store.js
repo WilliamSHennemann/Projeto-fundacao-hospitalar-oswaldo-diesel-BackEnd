@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { sortQuestionsForFlow } from './metrics.js';
 
 export const appStore = {
   hospitals: [
@@ -27,12 +28,12 @@ export const appStore = {
     { id: 6, setor_id: 6, caminho: '/raio-x', ordem: 1, ativo: true },
   ],
   perguntas: [
-    { id: 1, hospital_id: 1, setor_id: 1, rota_id: 1, texto: 'Como você avalia a recepção?', tipo: 'rostinho', geral: false, ordem: 1, obrigatoria: false, ativo: true },
-    { id: 2, hospital_id: 1, setor_id: 2, rota_id: 2, texto: 'Como você avalia a triagem?', tipo: 'rostinho', geral: false, ordem: 1, obrigatoria: false, ativo: true },
-    { id: 3, hospital_id: 1, setor_id: 3, rota_id: 3, texto: 'Como você avalia a enfermagem?', tipo: 'rostinho', geral: false, ordem: 1, obrigatoria: false, ativo: true },
-    { id: 4, hospital_id: 1, setor_id: 4, rota_id: 4, texto: 'Como você avalia o atendimento médico?', tipo: 'rostinho', geral: false, ordem: 1, obrigatoria: false, ativo: true },
-    { id: 5, hospital_id: 1, setor_id: 5, rota_id: 5, texto: 'Como você avalia a internação?', tipo: 'rostinho', geral: false, ordem: 1, obrigatoria: false, ativo: true },
-    { id: 6, hospital_id: 1, setor_id: 6, rota_id: 6, texto: 'Como você avalia o serviço de raio-x?', tipo: 'rostinho', geral: false, ordem: 1, obrigatoria: false, ativo: true },
+    { id: 1, hospital_id: 1, setor_id: 1, rota_id: 1, texto: 'Como você avalia a recepção?', tipo: 'rostinho', geral: false, todos_setores: false, ordem: 1, obrigatoria: false, ativo: true },
+    { id: 2, hospital_id: 1, setor_id: 2, rota_id: 2, texto: 'Como você avalia a triagem?', tipo: 'rostinho', geral: false, todos_setores: false, ordem: 1, obrigatoria: false, ativo: true },
+    { id: 3, hospital_id: 1, setor_id: 3, rota_id: 3, texto: 'Como você avalia a enfermagem?', tipo: 'rostinho', geral: false, todos_setores: false, ordem: 1, obrigatoria: false, ativo: true },
+    { id: 4, hospital_id: 1, setor_id: 4, rota_id: 4, texto: 'Como você avalia o atendimento médico?', tipo: 'rostinho', geral: false, todos_setores: false, ordem: 1, obrigatoria: false, ativo: true },
+    { id: 5, hospital_id: 1, setor_id: 5, rota_id: 5, texto: 'Como você avalia a internação?', tipo: 'rostinho', geral: false, todos_setores: false, ordem: 1, obrigatoria: false, ativo: true },
+    { id: 6, hospital_id: 1, setor_id: 6, rota_id: 6, texto: 'Como você avalia o serviço de raio-x?', tipo: 'rostinho', geral: false, todos_setores: false, ordem: 1, obrigatoria: false, ativo: true },
     {
       id: 7,
       hospital_id: 1,
@@ -41,6 +42,7 @@ export const appStore = {
       texto: 'De 0 a 10, o quanto você recomendaria a Fundação a um amigo ou familiar?',
       tipo: 'nps',
       geral: true,
+      todos_setores: false,
       ordem: 99,
       obrigatoria: true,
       ativo: true,
@@ -109,19 +111,13 @@ export function getPublicSetorFlow(setorSlug) {
     return null;
   }
 
-  const perguntas = appStore.perguntas.filter((item) => item.ativo && (item.setor_id === setor.id || item.geral));
+  const perguntas = appStore.perguntas.filter((item) => item.ativo && (item.setor_id === setor.id || item.geral || item.todos_setores));
 
-  return perguntas
-    .sort((a, b) => {
-      if (a.geral && !b.geral) return 1;
-      if (!a.geral && b.geral) return -1;
-      return a.ordem - b.ordem;
-    })
-    .map((question, index) => ({
-      ...question,
-      numero: index + 1,
-      url: `/pesquisa/${setor.slug}/pergunta/${index + 1}`,
-    }));
+  return sortQuestionsForFlow(perguntas).map((question, index) => ({
+    ...question,
+    numero: index + 1,
+    url: `/pesquisa/${setor.slug}/pergunta/${index + 1}`,
+  }));
 }
 
 export function getPesquisaById(id) {

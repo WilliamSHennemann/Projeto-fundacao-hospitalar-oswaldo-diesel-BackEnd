@@ -345,8 +345,9 @@ export const openApiDocument = {
       get: {
         summary: 'Exporta dados em Excel',
         security: [{ bearerAuth: [] }],
+        parameters: dashboardFilterParameters(),
         responses: {
-          '200': { description: 'Exportação concluída' },
+          '200': { description: 'Arquivo Excel .xlsx para download', content: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { schema: { type: 'string', format: 'binary' } } } },
         },
       },
     },
@@ -354,8 +355,9 @@ export const openApiDocument = {
       get: {
         summary: 'Exporta dados em PDF',
         security: [{ bearerAuth: [] }],
+        parameters: dashboardFilterParameters(),
         responses: {
-          '200': { description: 'Exportação concluída' },
+          '200': { description: 'Arquivo PDF para download', content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } } },
         },
       },
     },
@@ -368,7 +370,7 @@ export const openApiDocument = {
       post: {
         summary: 'Cria uma pergunta',
         security: [{ bearerAuth: [] }],
-        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['texto', 'tipo', 'ordem'], properties: { texto: { type: 'string' }, tipo: { type: 'string', enum: ['rostinho', 'texto', 'multipla', 'nps'] }, setor_id: { type: 'integer', nullable: true }, geral: { type: 'boolean' }, ordem: { type: 'integer' }, obrigatoria: { type: 'boolean' }, ativo: { type: 'boolean' }, opcoes: { type: 'array', items: { type: 'object', properties: { valor: { type: 'integer' }, rotulo: { type: 'string' }, emoji: { type: 'string' } } } } } } } } },
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['texto', 'tipo', 'ordem'], properties: { texto: { type: 'string' }, tipo: { type: 'string', enum: ['rostinho', 'texto', 'multipla', 'nps'] }, setor_id: { type: 'integer', nullable: true }, geral: { type: 'boolean', description: 'Pergunta NPS geral obrigatória' }, todos_setores: { type: 'boolean', description: 'Exibe a pergunta em todos os setores; exclusiva do super administrador' }, ordem: { type: 'integer' }, obrigatoria: { type: 'boolean' }, ativo: { type: 'boolean' }, opcoes: { type: 'array', items: { type: 'object', properties: { valor: { type: 'integer' }, rotulo: { type: 'string' }, emoji: { type: 'string' } } } } } } } } },
         responses: { '201': { description: 'Pergunta criada' }, '400': { description: 'Dados inválidos' }, '409': { description: 'Pergunta NPS geral já existe' } },
       },
     },
