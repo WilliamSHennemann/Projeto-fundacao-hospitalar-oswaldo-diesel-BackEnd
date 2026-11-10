@@ -199,6 +199,22 @@ router.delete('/admin/perguntas/:id', ...perguntaAccess, asyncHandler(async (req
   const item = appStore.perguntas.find((q) => q.id === Number(req.params.id)); if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' }); item.ativo = false; return res.json(item);
 }));
 
+router.delete('/admin/perguntas/:id/permanente', ...perguntaAccess, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ erro: 'ID da pergunta inválido', codigo: 'VALIDATION_ERROR' });
+  if (databaseConfigured) {
+    const result = await query('DELETE FROM pergunta WHERE id = $1 RETURNING *', [id]);
+    if (!result.rowCount) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
+    return res.json({ ok: true, pergunta: result.rows[0] });
+  }
+  const item = appStore.perguntas.find((question) => question.id === id);
+  if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
+  appStore.respostas = appStore.respostas.filter((resposta) => resposta.pergunta_id !== id);
+  appStore.opcoesResposta = appStore.opcoesResposta.filter((opcao) => opcao.pergunta_id !== id);
+  appStore.perguntas = appStore.perguntas.filter((question) => question.id !== id);
+  return res.json({ ok: true, pergunta: item });
+}));
+
 router.patch('/admin/perguntas/reordenar', ...perguntaAccess, asyncHandler(async (req, res) => {
   const parsed = z.object({ perguntas: z.array(z.object({ id: z.number().int().positive(), ordem: z.number().int().positive() })).min(1) }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.error.flatten() });
@@ -330,6 +346,41 @@ router.delete('/admin/setores/:id', requireAuth, requirePermission('super_admin'
   if (!setor) return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
   setor.ativo = false;
   return res.json(setor);
+}));
+
+router.delete('/admin/setores/:id/permanente', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ erro: 'ID do setor inválido', codigo: 'VALIDATION_ERROR' });
+  if (databaseConfigured) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const setorResult = await client.query('SELECT * FROM setor WHERE id = $1 FOR UPDATE', [id]);
+      if (!setorResult.rowCount) { await client.query('ROLLBACK'); return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' }); }
+      const patientResult = await client.query('SELECT paciente_id FROM pesquisa WHERE setor_id = $1 AND paciente_id IS NOT NULL', [id]);
+      const patientIds = patientResult.rows.map((row) => row.paciente_id);
+      await client.query('UPDATE usuario SET setor_id = NULL WHERE setor_id = $1', [id]);
+      await client.query('DELETE FROM setor WHERE id = $1', [id]);
+      if (patientIds.length) await client.query('DELETE FROM paciente pa WHERE pa.id = ANY($1::int[]) AND NOT EXISTS (SELECT 1 FROM pesquisa p WHERE p.paciente_id = pa.id)', [patientIds]);
+      await client.query('COMMIT');
+      return res.json({ ok: true, setor: setorResult.rows[0] });
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+  const setor = appStore.setores.find((item) => item.id === id);
+  if (!setor) return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
+  const surveyIds = new Set(appStore.pesquisas.filter((pesquisa) => pesquisa.setor_id === id).map((pesquisa) => pesquisa.id));
+  const patientIds = new Set(appStore.pesquisas.filter((pesquisa) => surveyIds.has(pesquisa.id) && pesquisa.paciente_id).map((pesquisa) => pesquisa.paciente_id));
+  const questionIds = new Set(appStore.perguntas.filter((pergunta) => pergunta.setor_id === id).map((pergunta) => pergunta.id));
+  appStore.respostas = appStore.respostas.filter((resposta) => !surveyIds.has(resposta.pesquisa_id) && !questionIds.has(resposta.pergunta_id));
+  appStore.manifestacoes = appStore.manifestacoes.filter((manifestacao) => !surveyIds.has(manifestacao.pesquisa_id));
+  appStore.pesquisas = appStore.pesquisas.filter((pesquisa) => !surveyIds.has(pesquisa.id));
+  appStore.pacientes = appStore.pacientes.filter((paciente) => !patientIds.has(paciente.id));
+  appStore.opcoesResposta = appStore.opcoesResposta.filter((opcao) => !questionIds.has(opcao.pergunta_id));
+  appStore.perguntas = appStore.perguntas.filter((pergunta) => !questionIds.has(pergunta.id));
+  appStore.rotas = appStore.rotas.filter((rota) => rota.setor_id !== id);
+  appStore.usuarios.forEach((usuario) => { if (usuario.setor_id === id) usuario.setor_id = null; });
+  appStore.setores = appStore.setores.filter((item) => item.id !== id);
+  return res.json({ ok: true, setor });
 }));
 
 router.get('/admin/perfis', requireAuth, requirePermission('super_admin'), asyncHandler(async (_req, res) => {

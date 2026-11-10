@@ -379,6 +379,9 @@ export const openApiDocument = {
       put: { summary: 'Edita pergunta e opções', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }], responses: { '200': { description: 'Pergunta atualizada' }, '403': { description: 'Permissão insuficiente para o setor' }, '404': { description: 'Pergunta não encontrada' } } },
       delete: { summary: 'Desativa uma pergunta sem apagar histórico', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }], responses: { '200': { description: 'Pergunta desativada' }, '404': { description: 'Pergunta não encontrada' } } },
     },
+    '/admin/perguntas/{id}/permanente': {
+      delete: { summary: 'Apaga permanentemente uma pergunta e suas respostas', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }], responses: { '200': { description: 'Pergunta apagada' }, '404': { description: 'Pergunta não encontrada' } } },
+    },
     '/admin/perguntas/reordenar': {
       patch: { summary: 'Reordena perguntas em transação', security: [{ bearerAuth: [] }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['perguntas'], properties: { perguntas: { type: 'array', items: { type: 'object', required: ['id', 'ordem'], properties: { id: { type: 'integer' }, ordem: { type: 'integer' } } } } } } } } }, responses: { '200': { description: 'Ordem atualizada' }, '400': { description: 'IDs ou ordens inválidas' } } },
     },
@@ -412,6 +415,9 @@ export const openApiDocument = {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
         responses: { '200': { description: 'Setor desativado' }, '404': { description: 'Setor não encontrado' } },
       },
+    },
+    '/admin/setores/{id}/permanente': {
+      delete: { summary: 'Apaga permanentemente um setor e todo o histórico associado', security: [{ bearerAuth: [] }], parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }], responses: { '200': { description: 'Setor apagado' }, '404': { description: 'Setor não encontrado' } } },
     },
     '/admin/perfis': {
       get: {
