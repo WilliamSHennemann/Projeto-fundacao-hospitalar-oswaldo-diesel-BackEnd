@@ -99,6 +99,18 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `GET /api/tvwall`
 - `GET /docs`
 
+### Documentação interativa e testes
+
+A documentação interativa da API está disponível em `http://localhost:3000/docs`.
+Ela permite explorar as operações e enviar requisições. Para autenticar chamadas
+administrativas, use **Authorize** com o token JWT obtido em `POST /api/auth/login`.
+As operações públicas da pesquisa usam o cabeçalho `X-Pesquisa-Token` retornado
+por `POST /api/pesquisas`. A especificação OpenAPI em JSON também está disponível
+em `http://localhost:3000/docs/openapi.json`.
+
+Execute `npm test` para rodar a suíte automatizada. O resultado da execução
+registrada para este projeto está em [docs/relatorio-testes.md](./docs/relatorio-testes.md).
+
 O dashboard aceita `inicio`, `fim` e `setor_id` em `/dashboard/resumo`,
 `/dashboard/setores`, `/dashboard/setores/:id/turnos` e `/dashboard/em-andamento`.
 `super_admin` pode administrar perguntas de qualquer setor. `gestao` e

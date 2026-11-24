@@ -306,6 +306,15 @@ export const openApiDocument = {
         },
       },
     },
+    '/dashboard/equipes': {
+      get: {
+        summary: 'Consulta o resumo de equipes',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': { description: 'Resumo das equipes' },
+        },
+      },
+    },
     '/dashboard/em-andamento': {
       get: {
         summary: 'Pesquisas em andamento',
@@ -319,6 +328,7 @@ export const openApiDocument = {
     '/tvwall': {
       get: {
         summary: 'Dados agregados para TV Wall',
+        security: [],
         responses: {
           '200': { description: 'Dados agregados da experiência do paciente' },
         },

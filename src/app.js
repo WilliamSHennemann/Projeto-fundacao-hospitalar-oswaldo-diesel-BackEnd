@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
 import { env } from './config/env.js';
 import { databaseConfigured, query } from './config/database.js';
 import { errorResponse } from './shared/errors.js';
@@ -46,9 +47,10 @@ app.get('/health', async (_req, res, next) => {
   }
 });
 
-app.get('/docs', (_req, res) => {
+app.get('/docs/openapi.json', (_req, res) => {
   res.json(openApiDocument);
 });
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument, { explorer: true }));
 
 app.use('/api', authRoutes);
 app.use('/api', pesquisaRoutes);
