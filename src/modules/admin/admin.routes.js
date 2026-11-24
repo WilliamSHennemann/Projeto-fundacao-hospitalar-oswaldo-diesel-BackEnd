@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import bcrypt from 'bcryptjs';
 import { appStore } from '../../shared/store.js';
 import { AppError } from '../../shared/errors.js';
 import { requireAuth, requireAnyPermission, requirePermission, enforceUserSectorScope } from '../auth/auth.routes.js';
@@ -19,6 +20,15 @@ const setorPatchSchema = z.object({
   ativo: z.boolean().optional(),
 }).refine((setor) => Object.keys(setor).length > 0, {
   message: 'Informe ao menos um campo para atualizar',
+});
+
+const createUsuarioSchema = z.object({
+  nome: z.string().trim().min(2),
+  email: z.string().trim().email(),
+  senha: z.string().min(6),
+  perfil_id: z.number().int().positive(),
+  setor_id: z.number().int().positive().nullable().optional(),
+  ativo: z.boolean().optional().default(true),
 });
 
 const normalizeSetorSlug = (value) => value
@@ -402,6 +412,82 @@ router.get('/admin/usuarios', requireAuth, requirePermission('super_admin'), asy
     return res.json(result.rows);
   }
   res.json(appStore.usuarios.map(({ senha_hash, ...user }) => user));
+}));
+
+router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const parsed = createUsuarioSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.error.flatten() });
+  }
+
+  const data = parsed.data;
+  const email = data.email.toLowerCase();
+  let profile;
+  let sector;
+
+  if (databaseConfigured) {
+    const profileResult = await query('SELECT id, nome, permissoes FROM perfil WHERE id = $1', [data.perfil_id]);
+    profile = profileResult.rows[0];
+  } else {
+    profile = appStore.perfis.find((item) => item.id === data.perfil_id);
+  }
+  if (!profile) {
+    return res.status(404).json({ erro: 'Perfil não encontrado', codigo: 'PERFIL_NOT_FOUND' });
+  }
+
+  const profilePermissions = databaseConfigured
+    ? (profile.permissoes?.roles ?? [])
+    : (profile.permissoes ?? []);
+  const needsSector = profilePermissions.includes('gestao') || profilePermissions.includes('admin_setor');
+  if (needsSector && !data.setor_id) {
+    return res.status(400).json({ erro: 'Gestores e administradores de setor precisam estar vinculados a um setor', codigo: 'SECTOR_REQUIRED' });
+  }
+
+  if (data.setor_id) {
+    if (databaseConfigured) {
+      const sectorResult = await query('SELECT id FROM setor WHERE id = $1 AND ativo = TRUE', [data.setor_id]);
+      sector = sectorResult.rows[0];
+    } else {
+      sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
+    }
+    if (!sector) {
+      return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
+    }
+  }
+
+  if (databaseConfigured) {
+    const duplicate = await query('SELECT 1 FROM usuario WHERE LOWER(email) = LOWER($1)', [email]);
+    if (duplicate.rowCount) {
+      return res.status(409).json({ erro: 'E-mail já cadastrado', codigo: 'EMAIL_EXISTS' });
+    }
+    const senhaHash = await bcrypt.hash(data.senha, 10);
+    const inserted = await query(
+      `INSERT INTO usuario (nome, email, perfil_id, setor_id, ativo, senha_hash)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, nome, email, perfil_id, setor_id, ativo`,
+      [data.nome, email, data.perfil_id, data.setor_id ?? null, data.ativo, senhaHash],
+    );
+    return res.status(201).json({ ...inserted.rows[0], permissoes: profilePermissions });
+  }
+
+  if (appStore.usuarios.some((item) => item.email.toLowerCase() === email)) {
+    return res.status(409).json({ erro: 'E-mail já cadastrado', codigo: 'EMAIL_EXISTS' });
+  }
+  const item = {
+    id: Math.max(0, ...appStore.usuarios.map((user) => user.id)) + 1,
+    nome: data.nome,
+    email,
+    perfil_id: data.perfil_id,
+    perfil: profile.nome.toLowerCase() === 'gestão'
+      ? 'gestao'
+      : profile.nome.toLowerCase().replace(/\s+/g, '_'),
+    setor_id: data.setor_id ?? null,
+    ativo: data.ativo,
+    senha_hash: await bcrypt.hash(data.senha, 10),
+  };
+  appStore.usuarios.push(item);
+  const { senha_hash, ...safeItem } = item;
+  return res.status(201).json({ ...safeItem, permissoes: profilePermissions });
 }));
 
 export default router;

@@ -28,6 +28,30 @@ afterEach(() => {
 });
 
 describe('admin question management', () => {
+  it('creates a management user linked to a sector', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const response = await request(app)
+      .post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({
+        nome: 'Gestora da Recepção',
+        email: 'gestora@fundacao.com',
+        senha: 'gestora123',
+        perfil_id: 3,
+        setor_id: 1,
+        ativo: true,
+      });
+
+    expect(response.status).toBe(201);
+    temporaryUserId = response.body.id;
+    expect(response.body.email).toBe('gestora@fundacao.com');
+    expect(response.body.setor_id).toBe(1);
+    expect(response.body.permissoes).toContain('gestao');
+
+    const loginManager = await request(app).post('/api/auth/login').send({ email: 'gestora@fundacao.com', senha: 'gestora123' });
+    expect(loginManager.status).toBe(200);
+  });
+
   it('creates a new sector with a slug-based public URL', async () => {
     const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
     const response = await request(app).post('/api/admin/setores').set('Authorization', `Bearer ${login.body.token}`).send({ nome: 'Centro de Tomografia' });

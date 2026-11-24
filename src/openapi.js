@@ -429,6 +429,35 @@ export const openApiDocument = {
       },
     },
     '/admin/usuarios': {
+      post: {
+        summary: 'Cria um usuário do sistema',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['nome', 'email', 'senha', 'perfil_id'],
+                properties: {
+                  nome: { type: 'string', minLength: 2 },
+                  email: { type: 'string', format: 'email' },
+                  senha: { type: 'string', minLength: 6 },
+                  perfil_id: { type: 'integer', minimum: 1 },
+                  setor_id: { type: ['integer', 'null'], minimum: 1 },
+                  ativo: { type: 'boolean', default: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { description: 'Usuário criado' },
+          '400': { description: 'Dados inválidos ou setor obrigatório' },
+          '404': { description: 'Perfil ou setor não encontrado' },
+          '409': { description: 'E-mail já cadastrado' },
+        },
+      },
       get: {
         summary: 'Lista usuários do sistema',
         security: [{ bearerAuth: [] }],
