@@ -171,6 +171,8 @@ CREATE TABLE IF NOT EXISTS usuario (
   ativo BOOLEAN NOT NULL DEFAULT TRUE,
   senha_hash TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS usuario_email_lower_uidx
+  ON usuario (LOWER(email));
 
 CREATE TABLE IF NOT EXISTS auditoria (
   id SERIAL PRIMARY KEY,

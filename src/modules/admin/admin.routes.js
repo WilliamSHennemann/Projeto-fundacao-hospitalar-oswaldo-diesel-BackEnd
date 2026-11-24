@@ -23,13 +23,12 @@ const setorPatchSchema = z.object({
 });
 
 const createUsuarioSchema = z.object({
-  nome: z.string().trim().min(2),
-  email: z.string().trim().email(),
-  senha: z.string().min(6),
-  perfil_id: z.number().int().positive(),
-  setor_id: z.number().int().positive().nullable().optional(),
-  ativo: z.boolean().optional().default(true),
+  nome: z.string().trim().min(2).max(120),
+  email: z.string().trim().email().max(255),
+  senha: z.string().min(8),
+  setor_id: z.number().int().positive(),
 });
+const gestorPermissions = ['dashboard', 'exportacoes', 'perguntas'];
 
 const normalizeSetorSlug = (value) => value
   .normalize('NFD')
@@ -103,14 +102,18 @@ const canManagePerguntas = asyncHandler(async (req, _res, next) => {
 
 const perguntaAccess = [requireAuth, requireAnyPermission('super_admin', 'gestao', 'admin_setor'), canManagePerguntas];
 
-router.get('/admin/perguntas', requireAuth, requireAnyPermission('super_admin', 'gestao', 'admin_setor'), enforceUserSectorScope, asyncHandler(async (req, res) => {
+router.get('/admin/perguntas', requireAuth, requireAnyPermission('super_admin', 'gestao', 'admin_setor'), enforceUserSectorScope(), asyncHandler(async (req, res) => {
   const scoped = !req.user.permissoes?.includes('super_admin')
     && (req.user.permissoes?.includes('gestao') || req.user.permissoes?.includes('admin_setor'));
+  const hideShared = req.user.permissoes?.includes('gestao')
+    && !req.user.permissoes?.includes('super_admin');
   if (databaseConfigured) {
-    const result = await query(`SELECT p.*, COALESCE(json_agg(json_build_object('id', o.id, 'pergunta_id', o.pergunta_id, 'valor', o.valor, 'rotulo', o.rotulo, 'emoji', o.emoji) ORDER BY o.valor) FILTER (WHERE o.id IS NOT NULL), '[]'::json) AS opcoes FROM pergunta p LEFT JOIN opcao_resposta o ON o.pergunta_id = p.id WHERE ($1::boolean = FALSE OR p.setor_id = $2 OR p.todos_setores = TRUE) GROUP BY p.id ORDER BY p.geral, p.todos_setores, p.setor_id, p.ordem`, [scoped, req.user.setor_id ?? null]);
+    const result = await query(`SELECT p.*, COALESCE(json_agg(json_build_object('id', o.id, 'pergunta_id', o.pergunta_id, 'valor', o.valor, 'rotulo', o.rotulo, 'emoji', o.emoji) ORDER BY o.valor) FILTER (WHERE o.id IS NOT NULL), '[]'::json) AS opcoes FROM pergunta p LEFT JOIN opcao_resposta o ON o.pergunta_id = p.id WHERE ($1::boolean = FALSE OR p.setor_id = $2 OR ($3::boolean = FALSE AND p.todos_setores = TRUE)) GROUP BY p.id ORDER BY p.geral, p.todos_setores, p.setor_id, p.ordem`, [scoped, req.user.setor_id ?? null, hideShared]);
     return res.json(result.rows);
   }
-  res.json(appStore.perguntas.filter((p) => !scoped || p.setor_id === req.user.setor_id || p.todos_setores).map((p) => ({ ...p, opcoes: appStore.opcoesResposta.filter((o) => o.pergunta_id === p.id) })));
+  res.json(appStore.perguntas.filter((p) => !scoped
+    || p.setor_id === req.user.setor_id
+    || (!hideShared && p.todos_setores)).map((p) => ({ ...p, opcoes: appStore.opcoesResposta.filter((o) => o.pergunta_id === p.id) })));
 }));
 
 router.post('/admin/perguntas', ...perguntaAccess, asyncHandler(async (req, res) => {
@@ -405,13 +408,22 @@ router.get('/admin/usuarios', requireAuth, requirePermission('super_admin'), asy
   if (databaseConfigured) {
     const result = await query(
       `SELECT u.id, u.nome, u.email, u.perfil_id, u.setor_id, u.ativo,
+              p.nome AS perfil_nome,
               COALESCE(p.permissoes->'roles', '[]'::jsonb) AS permissoes
        FROM usuario u JOIN perfil p ON p.id = u.perfil_id
        ORDER BY u.id`,
     );
-    return res.json(result.rows);
+    return res.json(result.rows.map(({ perfil_nome, ...user }) => ({
+      ...user,
+      perfil: user.permissoes.includes('super_admin')
+        ? 'super_admin'
+        : user.permissoes[0] ?? perfil_nome.toLowerCase().replace(/\s+/g, '_'),
+    })));
   }
-  res.json(appStore.usuarios.map(({ senha_hash, ...user }) => user));
+  res.json(appStore.usuarios.map(({ senha_hash, ...user }) => ({
+    ...user,
+    perfil: user.perfil ?? appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes[0],
+  })));
 }));
 
 router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
@@ -426,33 +438,31 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
   let sector;
 
   if (databaseConfigured) {
-    const profileResult = await query('SELECT id, nome, permissoes FROM perfil WHERE id = $1', [data.perfil_id]);
+    const profileResult = await query(
+      `SELECT id, nome, permissoes FROM perfil
+       WHERE permissoes->'roles' @> '["gestao"]'::jsonb
+         AND NOT (permissoes->'roles' @> '["super_admin"]'::jsonb)
+         AND NOT (permissoes->'roles' @> '["admin_setor"]'::jsonb)
+       ORDER BY id LIMIT 1`,
+    );
     profile = profileResult.rows[0];
   } else {
-    profile = appStore.perfis.find((item) => item.id === data.perfil_id);
+    profile = appStore.perfis.find((item) => item.permissoes.includes('gestao')
+      && !item.permissoes.includes('super_admin')
+      && !item.permissoes.includes('admin_setor'));
   }
   if (!profile) {
-    return res.status(404).json({ erro: 'Perfil não encontrado', codigo: 'PERFIL_NOT_FOUND' });
+    throw new AppError('Perfil de gestão não configurado', 500, 'GESTAO_PROFILE_NOT_CONFIGURED');
   }
 
-  const profilePermissions = databaseConfigured
-    ? (profile.permissoes?.roles ?? [])
-    : (profile.permissoes ?? []);
-  const needsSector = profilePermissions.includes('gestao') || profilePermissions.includes('admin_setor');
-  if (needsSector && !data.setor_id) {
-    return res.status(400).json({ erro: 'Gestores e administradores de setor precisam estar vinculados a um setor', codigo: 'SECTOR_REQUIRED' });
+  if (databaseConfigured) {
+    const sectorResult = await query('SELECT id FROM setor WHERE id = $1 AND ativo = TRUE', [data.setor_id]);
+    sector = sectorResult.rows[0];
+  } else {
+    sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
   }
-
-  if (data.setor_id) {
-    if (databaseConfigured) {
-      const sectorResult = await query('SELECT id FROM setor WHERE id = $1 AND ativo = TRUE', [data.setor_id]);
-      sector = sectorResult.rows[0];
-    } else {
-      sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
-    }
-    if (!sector) {
-      return res.status(404).json({ erro: 'Setor não encontrado', codigo: 'SETOR_NOT_FOUND' });
-    }
+  if (!sector) {
+    return res.status(404).json({ erro: 'Setor não encontrado ou inativo', codigo: 'SETOR_NOT_FOUND' });
   }
 
   if (databaseConfigured) {
@@ -461,13 +471,21 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
       return res.status(409).json({ erro: 'E-mail já cadastrado', codigo: 'EMAIL_EXISTS' });
     }
     const senhaHash = await bcrypt.hash(data.senha, 10);
-    const inserted = await query(
-      `INSERT INTO usuario (nome, email, perfil_id, setor_id, ativo, senha_hash)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, nome, email, perfil_id, setor_id, ativo`,
-      [data.nome, email, data.perfil_id, data.setor_id ?? null, data.ativo, senhaHash],
-    );
-    return res.status(201).json({ ...inserted.rows[0], permissoes: profilePermissions });
+    let inserted;
+    try {
+      inserted = await query(
+        `INSERT INTO usuario (nome, email, perfil_id, setor_id, ativo, senha_hash)
+         VALUES ($1, $2, $3, $4, TRUE, $5)
+         RETURNING id, nome, email, setor_id`,
+        [data.nome, email, profile.id, data.setor_id, senhaHash],
+      );
+    } catch (error) {
+      if (error.code === '23505') {
+        return res.status(409).json({ erro: 'E-mail já cadastrado', codigo: 'EMAIL_EXISTS' });
+      }
+      throw error;
+    }
+    return res.status(201).json({ ...inserted.rows[0], perfil: 'gestao', permissoes: gestorPermissions });
   }
 
   if (appStore.usuarios.some((item) => item.email.toLowerCase() === email)) {
@@ -477,17 +495,21 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
     id: Math.max(0, ...appStore.usuarios.map((user) => user.id)) + 1,
     nome: data.nome,
     email,
-    perfil_id: data.perfil_id,
-    perfil: profile.nome.toLowerCase() === 'gestão'
-      ? 'gestao'
-      : profile.nome.toLowerCase().replace(/\s+/g, '_'),
-    setor_id: data.setor_id ?? null,
-    ativo: data.ativo,
+    perfil_id: profile.id,
+    perfil: 'gestao',
+    setor_id: data.setor_id,
+    ativo: true,
     senha_hash: await bcrypt.hash(data.senha, 10),
   };
   appStore.usuarios.push(item);
-  const { senha_hash, ...safeItem } = item;
-  return res.status(201).json({ ...safeItem, permissoes: profilePermissions });
+  return res.status(201).json({
+    id: item.id,
+    nome: item.nome,
+    email: item.email,
+    perfil: 'gestao',
+    permissoes: gestorPermissions,
+    setor_id: item.setor_id,
+  });
 }));
 
 export default router;

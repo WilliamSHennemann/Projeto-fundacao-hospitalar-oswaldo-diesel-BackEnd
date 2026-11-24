@@ -430,7 +430,7 @@ export const openApiDocument = {
     },
     '/admin/usuarios': {
       post: {
-        summary: 'Cria um usuário do sistema',
+        summary: 'Cria uma conta de gestão vinculada a um setor (somente super_admin)',
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
@@ -438,23 +438,22 @@ export const openApiDocument = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['nome', 'email', 'senha', 'perfil_id'],
+                required: ['nome', 'email', 'senha', 'setor_id'],
                 properties: {
                   nome: { type: 'string', minLength: 2 },
                   email: { type: 'string', format: 'email' },
-                  senha: { type: 'string', minLength: 6 },
-                  perfil_id: { type: 'integer', minimum: 1 },
-                  setor_id: { type: ['integer', 'null'], minimum: 1 },
-                  ativo: { type: 'boolean', default: true },
+                  senha: { type: 'string', minLength: 8 },
+                  setor_id: { type: 'integer', minimum: 1 },
                 },
               },
             },
           },
         },
         responses: {
-          '201': { description: 'Usuário criado' },
-          '400': { description: 'Dados inválidos ou setor obrigatório' },
-          '404': { description: 'Perfil ou setor não encontrado' },
+          '201': { description: 'Conta de gestão criada, sem senha no retorno' },
+          '400': { description: 'Dados inválidos' },
+          '403': { description: 'Somente super_admin pode criar contas de gestão' },
+          '404': { description: 'Setor não encontrado ou inativo' },
           '409': { description: 'E-mail já cadastrado' },
         },
       },

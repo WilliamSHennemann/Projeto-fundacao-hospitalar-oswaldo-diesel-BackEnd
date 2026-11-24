@@ -44,7 +44,7 @@ function matchesFilters(pesquisa, filters) {
   return !filters.setor_id || pesquisa.setor_id === filters.setor_id;
 }
 
-const dashboardPermission = [requireAnyPermission('super_admin', 'gestao', 'ouvidoria', 'visu'), enforceUserSectorScope];
+const dashboardPermission = [requireAnyPermission('super_admin', 'gestao', 'ouvidoria', 'visu'), enforceUserSectorScope()];
 
 router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
   const filters = parseFilters(req);
@@ -83,15 +83,21 @@ router.get('/dashboard/setores', requireAuth, ...dashboardPermission, asyncHandl
   if (databaseConfigured) {
     const values = [];
     const on = [];
+    let sectorFilterIndex;
     if (filters.inicio) { values.push(filters.inicio); on.push(`(p.data_hora AT TIME ZONE 'America/Sao_Paulo') >= $${values.length}::date`); }
     if (filters.fim) { values.push(filters.fim); on.push(`(p.data_hora AT TIME ZONE 'America/Sao_Paulo') < ($${values.length}::date + INTERVAL '1 day')`); }
-    if (filters.setor_id) { values.push(filters.setor_id); on.push(`p.setor_id = $${values.length}`); }
+    if (filters.setor_id) {
+      values.push(filters.setor_id);
+      sectorFilterIndex = values.length;
+      on.push(`p.setor_id = $${sectorFilterIndex}`);
+    }
     const result = await query(
       `SELECT s.id AS setor_id, s.nome,
               ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas,
               AVG(p.media_parcial) FILTER (WHERE p.media_parcial IS NOT NULL) AS media
        FROM setor s LEFT JOIN pesquisa p ON p.setor_id = s.id${on.length ? ` AND ${on.join(' AND ')}` : ''}
-       WHERE s.ativo = TRUE GROUP BY s.id ORDER BY s.id`, values,
+       WHERE s.ativo = TRUE${sectorFilterIndex ? ` AND s.id = $${sectorFilterIndex}` : ''}
+       GROUP BY s.id ORDER BY s.id`, values,
     );
     return res.json(result.rows.map((row) => ({ setor_id: row.setor_id, nome: row.nome, nps: calculateNps((row.notas ?? []).map(Number)), media: row.media === null ? null : Number(Number(row.media).toFixed(1)) })));
   }
@@ -102,7 +108,7 @@ router.get('/dashboard/setores', requireAuth, ...dashboardPermission, asyncHandl
   return res.json(setores);
 }));
 
-router.get('/dashboard/setores/:id/turnos', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
+router.get('/dashboard/setores/:id/turnos', requireAuth, requireAnyPermission('super_admin', 'gestao', 'ouvidoria', 'visu'), enforceUserSectorScope('id'), asyncHandler(async (req, res) => {
   const setorId = Number(req.params.id);
   if (!Number.isInteger(setorId) || setorId < 1) throw new AppError('ID do setor inválido', 400, 'VALIDATION_ERROR');
   const filters = parseFilters(req);

@@ -10,7 +10,7 @@ const getConfigNumber = (key, fallback) => {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
 };
 
-router.get('/jobs/abandono', requireAuth, requirePermission('gestao'), enforceUserSectorScope, asyncHandler(async (req, res) => {
+router.get('/jobs/abandono', requireAuth, requirePermission('gestao'), enforceUserSectorScope(), asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const [setting, count] = await Promise.all([
       query(
@@ -67,7 +67,7 @@ router.get('/jobs/abandono', requireAuth, requirePermission('gestao'), enforceUs
   });
 }));
 
-router.get('/jobs/retencao', requireAuth, requirePermission('gestao'), enforceUserSectorScope, asyncHandler(async (req, res) => {
+router.get('/jobs/retencao', requireAuth, requirePermission('gestao'), enforceUserSectorScope(), asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const [setting, result] = await Promise.all([
       query(

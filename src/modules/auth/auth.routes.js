@@ -71,7 +71,7 @@ export const requireAuth = asyncHandler(async (req, _res, next) => {
     return next();
   }
 
-  const user = appStore.usuarios.find((item) => item.id === Number(payload.sub));
+  const user = appStore.usuarios.find((item) => item.id === Number(payload.sub) && item.ativo);
   if (!user) {
     return next(new AppError('Usuário não encontrado', 401, 'USER_NOT_FOUND'));
   }
@@ -104,7 +104,7 @@ export const requireAnyPermission = (...permissions) => (req, _res, next) => {
   return next(new AppError('PermissÃ£o insuficiente', 403, 'FORBIDDEN'));
 };
 
-export const enforceUserSectorScope = (req, _res, next) => {
+export const enforceUserSectorScope = (sectorParam) => (req, _res, next) => {
   const permissions = new Set(req.user?.permissoes ?? []);
   if (!permissions.has('gestao') || permissions.has('super_admin')) return next();
 
@@ -113,7 +113,8 @@ export const enforceUserSectorScope = (req, _res, next) => {
     return next(new AppError('Usuário de gestão precisa estar vinculado a um setor', 403, 'SECTOR_REQUIRED'));
   }
 
-  const requestedSectors = [req.query?.setor_id, req.params?.id].filter((value) => value !== undefined);
+  const requestedSectors = [req.query?.setor_id, sectorParam ? req.params?.[sectorParam] : undefined]
+    .filter((value) => value !== undefined);
   if (requestedSectors.some((requestedSector) => Number(requestedSector) !== sectorId)) {
     return next(new AppError('Acesso permitido somente ao setor vinculado ao usuário', 403, 'SECTOR_FORBIDDEN'));
   }
@@ -163,6 +164,7 @@ router.post('/auth/login', asyncHandler(async (req, res) => {
       nome: safeUser.nome,
       email: safeUser.email,
       perfil: safeUser.perfil,
+      setor_id: safeUser.setor_id,
       permissoes: safeUser.permissoes,
     },
   });

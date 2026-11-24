@@ -1,4 +1,5 @@
 import request from 'supertest';
+import bcrypt from 'bcryptjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import app from '../../app.js';
 import { appStore } from '../../shared/store.js';
@@ -28,7 +29,7 @@ afterEach(() => {
 });
 
 describe('admin question management', () => {
-  it('creates a management user linked to a sector', async () => {
+  it('creates a management user linked to a sector regardless of the requested profile', async () => {
     const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
     const response = await request(app)
       .post('/api/admin/usuarios')
@@ -37,19 +38,100 @@ describe('admin question management', () => {
         nome: 'Gestora da Recepção',
         email: 'gestora@fundacao.com',
         senha: 'gestora123',
-        perfil_id: 3,
+        perfil: 'super_admin',
         setor_id: 1,
-        ativo: true,
       });
 
     expect(response.status).toBe(201);
     temporaryUserId = response.body.id;
-    expect(response.body.email).toBe('gestora@fundacao.com');
-    expect(response.body.setor_id).toBe(1);
-    expect(response.body.permissoes).toContain('gestao');
+    expect(response.body).toEqual({
+      id: temporaryUserId,
+      nome: 'Gestora da Recepção',
+      email: 'gestora@fundacao.com',
+      perfil: 'gestao',
+      permissoes: ['dashboard', 'exportacoes', 'perguntas'],
+      setor_id: 1,
+    });
+    const storedUser = appStore.usuarios.find((user) => user.id === temporaryUserId);
+    expect(storedUser.perfil).toBe('gestao');
+    expect(storedUser.senha_hash).not.toBe('gestora123');
+    expect(await bcrypt.compare('gestora123', storedUser.senha_hash)).toBe(true);
 
     const loginManager = await request(app).post('/api/auth/login').send({ email: 'gestora@fundacao.com', senha: 'gestora123' });
     expect(loginManager.status).toBe(200);
+    expect(loginManager.body.usuario).toMatchObject({ perfil: 'gestao', setor_id: 1 });
+    expect(loginManager.body.usuario).not.toHaveProperty('senha');
+    const managerAuth = { Authorization: `Bearer ${loginManager.body.token}` };
+
+    const questions = await request(app).get('/api/admin/perguntas').set(managerAuth);
+    expect(questions.status).toBe(200);
+    expect(questions.body.every((question) => question.setor_id === 1)).toBe(true);
+
+    const deniedCreate = await request(app)
+      .post('/api/admin/perguntas')
+      .set(managerAuth)
+      .send({ setor_id: 2, texto: 'Pergunta de outro setor', tipo: 'texto', ordem: 10, obrigatoria: false });
+    expect(deniedCreate.status).toBe(403);
+
+    const deniedEdit = await request(app).put('/api/admin/perguntas/2').set(managerAuth).send({ setor_id: 1 });
+    expect(deniedEdit.status).toBe(403);
+    const deniedDelete = await request(app).delete('/api/admin/perguntas/2').set(managerAuth);
+    expect(deniedDelete.status).toBe(403);
+    const deniedReorder = await request(app)
+      .patch('/api/admin/perguntas/reordenar')
+      .set(managerAuth)
+      .send({ perguntas: [{ id: 2, ordem: 1 }] });
+    expect(deniedReorder.status).toBe(403);
+
+    const deniedSectorAdmin = await request(app).get('/api/admin/setores').set(managerAuth);
+    const deniedUserAdmin = await request(app).get('/api/admin/usuarios').set(managerAuth);
+    expect(deniedSectorAdmin.status).toBe(403);
+    expect(deniedUserAdmin.status).toBe(403);
+
+    storedUser.ativo = false;
+    try {
+      const disabledLogin = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'gestora@fundacao.com', senha: 'gestora123' });
+      expect(disabledLogin.status).toBe(401);
+    } finally {
+      storedUser.ativo = true;
+    }
+
+    const duplicate = await request(app)
+      .post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({ nome: 'Outra Gestora', email: 'GESTORA@FUNDACAO.COM', senha: 'outrasenha123', setor_id: 1 });
+    expect(duplicate.status).toBe(409);
+
+    const invalidPassword = await request(app)
+      .post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({ nome: 'Senha Curta', email: 'curta@fundacao.com', senha: '1234567', setor_id: 1 });
+    expect(invalidPassword.status).toBe(400);
+  });
+
+  it('denies gestor creation to non-super-admin profiles and rejects inactive sectors', async () => {
+    const login = await request(app).post('/api/auth/login').send({ email: 'ouvidoria@fundacao.com', senha: 'ouvidoria123' });
+    const denied = await request(app)
+      .post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({ nome: 'Gestora', email: 'negada@fundacao.com', senha: 'senha12345', setor_id: 1 });
+    expect(denied.status).toBe(403);
+
+    const superLogin = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const inactiveSector = appStore.setores.find((sector) => sector.id === 6);
+    const originalActive = inactiveSector.ativo;
+    inactiveSector.ativo = false;
+    try {
+      const response = await request(app)
+        .post('/api/admin/usuarios')
+        .set('Authorization', `Bearer ${superLogin.body.token}`)
+        .send({ nome: 'Setor Inativo', email: 'inativo@fundacao.com', senha: 'senha12345', setor_id: 6 });
+      expect(response.status).toBe(404);
+    } finally {
+      inactiveSector.ativo = originalActive;
+    }
   });
 
   it('creates a new sector with a slug-based public URL', async () => {
@@ -179,7 +261,7 @@ describe('admin question management', () => {
     });
     const managementAuth = { Authorization: `Bearer ${managementToken}` };
     const questions = await request(app).get('/api/admin/perguntas').set(managementAuth);
-    expect(questions.body.some((question) => question.id === createdQuestionId)).toBe(true);
+    expect(questions.body.some((question) => question.id === createdQuestionId)).toBe(false);
     const deniedEdit = await request(app).put(`/api/admin/perguntas/${createdQuestionId}`).set(managementAuth).send({
       setor_id: null,
       todos_setores: true,

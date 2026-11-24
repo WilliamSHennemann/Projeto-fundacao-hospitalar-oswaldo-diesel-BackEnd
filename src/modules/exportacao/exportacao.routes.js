@@ -230,7 +230,7 @@ const createExportHandler = (tipo) => asyncHandler(async (req, res) => {
 const exportPermissions = [
   requireAuth,
   requireAnyPermission('super_admin', 'gestao', 'ouvidoria'),
-  enforceUserSectorScope,
+  enforceUserSectorScope(),
 ];
 
 router.get('/exportacoes/excel', ...exportPermissions, createExportHandler('excel'));

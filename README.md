@@ -86,6 +86,8 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `GET /api/exportacoes/excel?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
 - `GET /api/exportacoes/pdf?inicio=YYYY-MM-DD&fim=YYYY-MM-DD&setor_id=1`
 - `GET /api/admin/perguntas`
+- `GET /api/admin/usuarios`
+- `POST /api/admin/usuarios`
 - `POST /api/admin/perguntas`
 - `GET /api/admin/setores`
 - `POST /api/admin/setores`
@@ -107,6 +109,13 @@ comum aparecer em todos os setores, crie-a como super administrador com
 "todos os setores" do formulário. O NPS geral continua usando `geral: true`.
 `visualizador`, `ouvidoria`, `gestao` e `super_admin` podem consultar o dashboard;
 apenas `ouvidoria` e `super_admin` podem consultar ou atualizar manifestações.
+
+Somente `super_admin` pode criar contas de gestão em `POST /api/admin/usuarios`.
+Informe `nome`, `email`, `senha` (mínimo de 8 caracteres) e `setor_id`; o perfil
+é sempre criado como `gestao` e o setor precisa estar ativo. O login dessas
+contas usa normalmente `POST /api/auth/login` e retorna `setor_id` no usuário.
+Gestores têm os dados do dashboard, exportações e perguntas limitados ao setor
+vinculado à conta.
 
 As rotas `/api/exportacoes/excel` e `/api/exportacoes/pdf` retornam arquivos
 baixáveis `.xlsx` e `.pdf`, com total de pesquisas, média das avaliações e NPS
