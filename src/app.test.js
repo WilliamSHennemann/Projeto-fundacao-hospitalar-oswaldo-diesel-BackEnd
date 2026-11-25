@@ -17,6 +17,6 @@ describe('API documentation', () => {
     expect(response.status).toBe(200);
     expect(response.body.openapi).toBe('3.0.0');
     expect(response.body.paths['/dashboard/equipes']).toBeDefined();
-    expect(response.body.paths['/tvwall'].get.security).toEqual([]);
+    expect(response.body.paths['/tvwall'].get.security).toEqual([{ bearerAuth: [] }]);
   });
 });

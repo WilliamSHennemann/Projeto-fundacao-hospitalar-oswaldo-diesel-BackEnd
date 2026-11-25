@@ -39,6 +39,7 @@ describe('admin question management', () => {
         email: 'gestora@fundacao.com',
         senha: 'gestora123',
         perfil: 'super_admin',
+        permissoes: ['super_admin'],
         setor_id: 1,
       });
 
@@ -57,6 +58,16 @@ describe('admin question management', () => {
     expect(storedUser.senha_hash).not.toBe('gestora123');
     expect(await bcrypt.compare('gestora123', storedUser.senha_hash)).toBe(true);
 
+    const listedManagers = await request(app).get('/api/admin/usuarios').set('Authorization', `Bearer ${login.body.token}`);
+    expect(listedManagers.status).toBe(200);
+    expect(listedManagers.body.every((user) => user.perfil === 'gestao')).toBe(true);
+    expect(listedManagers.body.find((user) => user.id === temporaryUserId)).toMatchObject({
+      nome: 'Gestora da Recepção',
+      setor_id: 1,
+      permissoes: ['dashboard', 'exportacoes', 'perguntas'],
+    });
+    expect(listedManagers.body.find((user) => user.id === temporaryUserId)).not.toHaveProperty('senha_hash');
+
     const loginManager = await request(app).post('/api/auth/login').send({ email: 'gestora@fundacao.com', senha: 'gestora123' });
     expect(loginManager.status).toBe(200);
     expect(loginManager.body.usuario).toMatchObject({ perfil: 'gestao', setor_id: 1 });
@@ -66,6 +77,32 @@ describe('admin question management', () => {
     const questions = await request(app).get('/api/admin/perguntas').set(managerAuth);
     expect(questions.status).toBe(200);
     expect(questions.body.every((question) => question.setor_id === 1)).toBe(true);
+
+    const createdQuestion = await request(app).post('/api/admin/perguntas').set(managerAuth).send({
+      texto: 'Como avalia a organização?',
+      tipo: 'texto',
+      ordem: 10,
+      obrigatoria: false,
+    });
+    expect(createdQuestion.status).toBe(201);
+    createdQuestionId = createdQuestion.body.id;
+    expect(createdQuestion.body.setor_id).toBe(1);
+    const editedQuestion = await request(app).put(`/api/admin/perguntas/${createdQuestionId}`).set(managerAuth).send({
+      texto: 'Como avalia a organização do setor?',
+      tipo: 'texto',
+      ordem: 10,
+      obrigatoria: false,
+    });
+    expect(editedQuestion.status).toBe(200);
+    expect(editedQuestion.body.setor_id).toBe(1);
+    const deniedSectorChange = await request(app).put(`/api/admin/perguntas/${createdQuestionId}`).set(managerAuth).send({
+      setor_id: 2,
+      texto: 'Tentativa de alterar o setor',
+      tipo: 'texto',
+      ordem: 10,
+      obrigatoria: false,
+    });
+    expect(deniedSectorChange.status).toBe(403);
 
     const deniedCreate = await request(app)
       .post('/api/admin/perguntas')
@@ -111,15 +148,29 @@ describe('admin question management', () => {
     expect(invalidPassword.status).toBe(400);
   });
 
-  it('denies gestor creation to non-super-admin profiles and rejects inactive sectors', async () => {
+  it('denies gestor administration to non-super-admin profiles and rejects invalid sectors', async () => {
+    const superLogin = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const created = await request(app).post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${superLogin.body.token}`)
+      .send({ nome: 'Gestora protegida', email: 'gestora-protegida@fundacao.com', senha: 'senha12345', setor_id: 1 });
+    expect(created.status).toBe(201);
+    temporaryUserId = created.body.id;
+
     const login = await request(app).post('/api/auth/login').send({ email: 'ouvidoria@fundacao.com', senha: 'ouvidoria123' });
     const denied = await request(app)
       .post('/api/admin/usuarios')
       .set('Authorization', `Bearer ${login.body.token}`)
       .send({ nome: 'Gestora', email: 'negada@fundacao.com', senha: 'senha12345', setor_id: 1 });
     expect(denied.status).toBe(403);
+    const deniedList = await request(app).get('/api/admin/usuarios').set('Authorization', `Bearer ${login.body.token}`);
+    const deniedDelete = await request(app).delete(`/api/admin/usuarios/${temporaryUserId}`).set('Authorization', `Bearer ${login.body.token}`);
+    expect(deniedList.status).toBe(403);
+    expect(deniedDelete.status).toBe(403);
 
-    const superLogin = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const nonexistentSector = await request(app).post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${superLogin.body.token}`)
+      .send({ nome: 'Setor ausente', email: 'setor-ausente@fundacao.com', senha: 'senha12345', setor_id: 9999 });
+    expect(nonexistentSector.status).toBe(404);
     const inactiveSector = appStore.setores.find((sector) => sector.id === 6);
     const originalActive = inactiveSector.ativo;
     inactiveSector.ativo = false;
@@ -132,6 +183,39 @@ describe('admin question management', () => {
     } finally {
       inactiveSector.ativo = originalActive;
     }
+  });
+
+  it('deactivates only gestor accounts and rejects their existing tokens without deleting history', async () => {
+    const superLogin = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const created = await request(app).post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${superLogin.body.token}`)
+      .send({ nome: 'Gestora removida', email: 'gestora-removida@fundacao.com', senha: 'senha12345', setor_id: 1 });
+    expect(created.status).toBe(201);
+    temporaryUserId = created.body.id;
+
+    const managerLogin = await request(app).post('/api/auth/login')
+      .send({ email: 'gestora-removida@fundacao.com', senha: 'senha12345' });
+    expect(managerLogin.status).toBe(200);
+    const history = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: true });
+    createdSurveyId = history.body.pesquisa_id;
+
+    const removed = await request(app).delete(`/api/admin/usuarios/${temporaryUserId}`)
+      .set('Authorization', `Bearer ${superLogin.body.token}`);
+    expect(removed.status).toBe(200);
+    expect(appStore.usuarios.find((user) => user.id === temporaryUserId).ativo).toBe(false);
+    expect(appStore.pesquisas.some((survey) => survey.id === createdSurveyId)).toBe(true);
+
+    const oldToken = { Authorization: `Bearer ${managerLogin.body.token}` };
+    const oldSession = await request(app).get('/api/auth/me').set(oldToken);
+    expect(oldSession.status).toBe(401);
+    const rejectedLogin = await request(app).post('/api/auth/login')
+      .send({ email: 'gestora-removida@fundacao.com', senha: 'senha12345' });
+    expect(rejectedLogin.status).toBe(401);
+
+    const deniedSuperAdminRemoval = await request(app).delete('/api/admin/usuarios/1')
+      .set('Authorization', `Bearer ${superLogin.body.token}`);
+    expect(deniedSuperAdminRemoval.status).toBe(404);
+    expect(appStore.usuarios.find((user) => user.id === 1).ativo).toBe(true);
   });
 
   it('creates a new sector with a slug-based public URL', async () => {

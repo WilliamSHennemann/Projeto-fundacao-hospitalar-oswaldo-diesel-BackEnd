@@ -327,10 +327,12 @@ export const openApiDocument = {
     },
     '/tvwall': {
       get: {
-        summary: 'Dados agregados para TV Wall',
-        security: [],
+        summary: 'Dados agregados para TV Wall, limitados ao setor da Gestão',
+        security: [{ bearerAuth: [] }],
         responses: {
-          '200': { description: 'Dados agregados da experiência do paciente' },
+          '200': { description: 'Dados agregados da experiência do paciente; gestores recebem apenas o setor vinculado' },
+          '401': { description: 'Token ausente ou inválido' },
+          '403': { description: 'Gestor sem setor vinculado ou filtro fora do escopo' },
         },
       },
     },
@@ -468,10 +470,24 @@ export const openApiDocument = {
         },
       },
       get: {
-        summary: 'Lista usuários do sistema',
+        summary: 'Lista gestores ativos (somente super_admin)',
         security: [{ bearerAuth: [] }],
         responses: {
-          '200': { description: 'Lista de usuários' },
+          '200': { description: 'Lista gestores sem senha ou hash, com setor e permissões' },
+          '403': { description: 'Somente super_admin pode listar gestores' },
+        },
+      },
+    },
+    '/admin/usuarios/{id}': {
+      delete: {
+        summary: 'Desativa uma conta de gestão sem apagar histórico (somente super_admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        responses: {
+          '200': { description: 'Conta de gestão desativada' },
+          '400': { description: 'ID inválido' },
+          '403': { description: 'Somente super_admin pode desativar gestores' },
+          '404': { description: 'Gestor não encontrado' },
         },
       },
     },

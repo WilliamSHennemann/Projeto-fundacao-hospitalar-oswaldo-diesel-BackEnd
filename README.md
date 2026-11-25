@@ -88,6 +88,7 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `GET /api/admin/perguntas`
 - `GET /api/admin/usuarios`
 - `POST /api/admin/usuarios`
+- `DELETE /api/admin/usuarios/:id`
 - `POST /api/admin/perguntas`
 - `GET /api/admin/setores`
 - `POST /api/admin/setores`
@@ -122,12 +123,21 @@ comum aparecer em todos os setores, crie-a como super administrador com
 `visualizador`, `ouvidoria`, `gestao` e `super_admin` podem consultar o dashboard;
 apenas `ouvidoria` e `super_admin` podem consultar ou atualizar manifestações.
 
-Somente `super_admin` pode criar contas de gestão em `POST /api/admin/usuarios`.
-Informe `nome`, `email`, `senha` (mínimo de 8 caracteres) e `setor_id`; o perfil
-é sempre criado como `gestao` e o setor precisa estar ativo. O login dessas
-contas usa normalmente `POST /api/auth/login` e retorna `setor_id` no usuário.
-Gestores têm os dados do dashboard, exportações e perguntas limitados ao setor
-vinculado à conta.
+Somente `super_admin` pode criar, listar e desativar gestores. Para criar em
+`POST /api/admin/usuarios`, informe `nome`, `email`, `senha` (mínimo de 8
+caracteres) e `setor_id`; o perfil é sempre `gestao`, o e-mail é único sem
+diferenciar maiúsculas/minúsculas e o setor precisa estar ativo. `GET
+/api/admin/usuarios` lista somente gestores ativos, sem senha ou hash.
+`DELETE /api/admin/usuarios/:id` desativa uma conta de gestão sem apagar
+registros históricos. O login dessas contas usa normalmente
+`POST /api/auth/login` e retorna `setor_id` no usuário; contas desativadas não
+podem entrar e seus tokens existentes deixam de autenticar em rotas protegidas.
+Gestores têm os dados do dashboard, exportações e perguntas limitados no servidor
+ao setor vinculado à conta.
+
+`GET /api/tvwall` exige token de usuário ativo. Para contas `gestao`, os
+indicadores gerais, os dados por setor e a contagem de elogios também são
+calculados somente para o setor vinculado.
 
 As rotas `/api/exportacoes/excel` e `/api/exportacoes/pdf` retornam arquivos
 baixáveis `.xlsx` e `.pdf`, com total de pesquisas, média das avaliações e NPS
