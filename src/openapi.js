@@ -479,6 +479,34 @@ export const openApiDocument = {
       },
     },
     '/admin/usuarios/{id}': {
+      patch: {
+        summary: 'Edita nome, e-mail ou setor de uma conta de gestão (somente super_admin)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                minProperties: 1,
+                properties: {
+                  nome: { type: 'string', minLength: 2, maxLength: 120 },
+                  email: { type: 'string', format: 'email', maxLength: 255 },
+                  setor_id: { type: 'integer', minimum: 1 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { description: 'Gestor atualizado, sem senha ou hash no retorno' },
+          '400': { description: 'ID ou dados inválidos' },
+          '403': { description: 'Somente super_admin pode editar gestores' },
+          '404': { description: 'Gestor ou setor ativo não encontrado' },
+          '409': { description: 'E-mail já cadastrado' },
+        },
+      },
       delete: {
         summary: 'Desativa uma conta de gestão sem apagar histórico (somente super_admin)',
         security: [{ bearerAuth: [] }],

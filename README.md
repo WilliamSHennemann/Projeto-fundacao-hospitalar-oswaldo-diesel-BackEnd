@@ -88,6 +88,7 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `GET /api/admin/perguntas`
 - `GET /api/admin/usuarios`
 - `POST /api/admin/usuarios`
+- `PATCH /api/admin/usuarios/:id`
 - `DELETE /api/admin/usuarios/:id`
 - `POST /api/admin/perguntas`
 - `GET /api/admin/setores`
@@ -123,11 +124,14 @@ comum aparecer em todos os setores, crie-a como super administrador com
 `visualizador`, `ouvidoria`, `gestao` e `super_admin` podem consultar o dashboard;
 apenas `ouvidoria` e `super_admin` podem consultar ou atualizar manifestações.
 
-Somente `super_admin` pode criar, listar e desativar gestores. Para criar em
+Somente `super_admin` pode criar, listar, editar e desativar gestores. Para criar em
 `POST /api/admin/usuarios`, informe `nome`, `email`, `senha` (mínimo de 8
 caracteres) e `setor_id`; o perfil é sempre `gestao`, o e-mail é único sem
 diferenciar maiúsculas/minúsculas e o setor precisa estar ativo. `GET
 /api/admin/usuarios` lista somente gestores ativos, sem senha ou hash.
+`PATCH /api/admin/usuarios/:id` permite atualizar `nome`, `email` e/ou
+`setor_id`; o perfil e as permissões não podem ser alterados e a senha não é
+redefinida por essa rota.
 `DELETE /api/admin/usuarios/:id` desativa uma conta de gestão sem apagar
 registros históricos. O login dessas contas usa normalmente
 `POST /api/auth/login` e retorna `setor_id` no usuário; contas desativadas não

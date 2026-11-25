@@ -28,6 +28,13 @@ const createUsuarioSchema = z.object({
   senha: z.string().min(8),
   setor_id: z.number().int().positive(),
 });
+const updateUsuarioSchema = z.object({
+  nome: z.string().trim().min(2).max(120).optional(),
+  email: z.string().trim().email().max(255).optional(),
+  setor_id: z.number().int().positive().optional(),
+}).refine((usuario) => Object.keys(usuario).length > 0, {
+  message: 'Informe ao menos um campo para atualizar',
+});
 const gestorPermissions = ['dashboard', 'exportacoes', 'perguntas'];
 const isGestaoProfile = (permissions) => Array.isArray(permissions)
   && permissions.length === 1
@@ -521,6 +528,89 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
     perfil: 'gestao',
     permissoes: gestorPermissions,
     setor_id: item.setor_id,
+  });
+}));
+
+router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  if (!/^[1-9]\d*$/.test(req.params.id)) {
+    throw new AppError('ID do usuário inválido', 400, 'VALIDATION_ERROR');
+  }
+  const parsed = updateUsuarioSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.error.flatten() });
+  }
+  const id = Number(req.params.id);
+  const data = parsed.data;
+  if (databaseConfigured) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const currentResult = await client.query(
+        `SELECT u.id, u.nome, u.email, u.setor_id
+         FROM usuario u JOIN perfil p ON p.id = u.perfil_id
+         WHERE u.id = $1 AND u.ativo = TRUE
+           AND p.permissoes->'roles' = '["gestao"]'::jsonb
+         FOR UPDATE OF u`,
+        [id],
+      );
+      if (!currentResult.rowCount) throw new AppError('Gestor não encontrado', 404, 'USER_NOT_FOUND');
+      const current = currentResult.rows[0];
+      const email = (data.email ?? current.email).toLowerCase();
+      const setorId = data.setor_id ?? current.setor_id;
+
+      if (data.setor_id !== undefined) {
+        const sectorResult = await client.query('SELECT id FROM setor WHERE id = $1 AND ativo = TRUE FOR SHARE', [setorId]);
+        if (!sectorResult.rowCount) throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+      }
+      const duplicate = await client.query(
+        'SELECT 1 FROM usuario WHERE LOWER(email) = LOWER($1) AND id <> $2',
+        [email, id],
+      );
+      if (duplicate.rowCount) throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
+
+      const updated = await client.query(
+        `UPDATE usuario SET nome = $2, email = $3, setor_id = $4
+         WHERE id = $1
+         RETURNING id, nome, email, setor_id`,
+        [id, data.nome ?? current.nome, email, setorId],
+      );
+      await client.query('COMMIT');
+      return res.json({ ...updated.rows[0], perfil: 'gestao', permissoes: gestorPermissions });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error.code === '23505') {
+        throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const user = appStore.usuarios.find((item) => item.id === id && item.ativo);
+  const profilePermissions = user
+    ? appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes ?? (user.perfil ? [user.perfil] : [])
+    : [];
+  if (!user || !isGestaoProfile(profilePermissions)) {
+    throw new AppError('Gestor não encontrado', 404, 'USER_NOT_FOUND');
+  }
+  const email = (data.email ?? user.email).toLowerCase();
+  if (appStore.usuarios.some((item) => item.id !== id && item.email.toLowerCase() === email)) {
+    throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
+  }
+  if (data.setor_id !== undefined && !appStore.setores.some((sector) => sector.id === data.setor_id && sector.ativo)) {
+    throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+  }
+  if (data.nome !== undefined) user.nome = data.nome;
+  user.email = email;
+  if (data.setor_id !== undefined) user.setor_id = data.setor_id;
+  return res.json({
+    id: user.id,
+    nome: user.nome,
+    email: user.email,
+    perfil: 'gestao',
+    permissoes: gestorPermissions,
+    setor_id: user.setor_id ?? null,
   });
 }));
 

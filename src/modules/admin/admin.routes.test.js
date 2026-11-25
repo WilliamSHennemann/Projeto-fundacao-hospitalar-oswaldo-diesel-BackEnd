@@ -163,8 +163,12 @@ describe('admin question management', () => {
       .send({ nome: 'Gestora', email: 'negada@fundacao.com', senha: 'senha12345', setor_id: 1 });
     expect(denied.status).toBe(403);
     const deniedList = await request(app).get('/api/admin/usuarios').set('Authorization', `Bearer ${login.body.token}`);
+    const deniedEdit = await request(app).patch(`/api/admin/usuarios/${temporaryUserId}`)
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({ nome: 'Tentativa não autorizada' });
     const deniedDelete = await request(app).delete(`/api/admin/usuarios/${temporaryUserId}`).set('Authorization', `Bearer ${login.body.token}`);
     expect(deniedList.status).toBe(403);
+    expect(deniedEdit.status).toBe(403);
     expect(deniedDelete.status).toBe(403);
 
     const nonexistentSector = await request(app).post('/api/admin/usuarios')
@@ -183,6 +187,64 @@ describe('admin question management', () => {
     } finally {
       inactiveSector.ativo = originalActive;
     }
+  });
+
+  it('allows super_admin to edit gestor name, email and sector without changing profile or password', async () => {
+    const superLogin = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
+    const created = await request(app).post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${superLogin.body.token}`)
+      .send({ nome: 'Gestora editável', email: 'gestora-editavel@fundacao.com', senha: 'senha12345', setor_id: 1 });
+    expect(created.status).toBe(201);
+    temporaryUserId = created.body.id;
+    const storedUser = appStore.usuarios.find((user) => user.id === temporaryUserId);
+    const originalPasswordHash = storedUser.senha_hash;
+    const auth = { Authorization: `Bearer ${superLogin.body.token}` };
+
+    const duplicateEmail = await request(app).patch(`/api/admin/usuarios/${temporaryUserId}`)
+      .set(auth)
+      .send({ email: 'OUVIDORIA@FUNDACAO.COM' });
+    expect(duplicateEmail.status).toBe(409);
+
+    const missingSector = await request(app).patch(`/api/admin/usuarios/${temporaryUserId}`)
+      .set(auth)
+      .send({ setor_id: 9999 });
+    expect(missingSector.status).toBe(404);
+
+    const privilegeOnly = await request(app).patch(`/api/admin/usuarios/${temporaryUserId}`)
+      .set(auth)
+      .send({ perfil: 'super_admin', permissoes: ['super_admin'] });
+    expect(privilegeOnly.status).toBe(400);
+
+    const updated = await request(app).patch(`/api/admin/usuarios/${temporaryUserId}`)
+      .set(auth)
+      .send({
+        nome: 'Gestora atualizada',
+        email: 'GESTORA-ATUALIZADA@FUNDACAO.COM',
+        setor_id: 2,
+        perfil: 'super_admin',
+        permissoes: ['super_admin'],
+      });
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({
+      id: temporaryUserId,
+      nome: 'Gestora atualizada',
+      email: 'gestora-atualizada@fundacao.com',
+      perfil: 'gestao',
+      permissoes: ['dashboard', 'exportacoes', 'perguntas'],
+      setor_id: 2,
+    });
+    expect(storedUser.senha_hash).toBe(originalPasswordHash);
+    expect(storedUser.perfil).toBe('gestao');
+
+    const relogin = await request(app).post('/api/auth/login')
+      .send({ email: 'gestora-atualizada@fundacao.com', senha: 'senha12345' });
+    expect(relogin.status).toBe(200);
+    expect(relogin.body.usuario).toMatchObject({ perfil: 'gestao', setor_id: 2 });
+
+    const deniedSuperAdminEdit = await request(app).patch('/api/admin/usuarios/1')
+      .set(auth)
+      .send({ nome: 'Não deve alterar super admin' });
+    expect(deniedSuperAdminEdit.status).toBe(404);
   });
 
   it('deactivates only gestor accounts and rejects their existing tokens without deleting history', async () => {
