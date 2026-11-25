@@ -66,7 +66,6 @@ app.use('/api', adminRoutes);
 app.use('/api', jobsRoutes);
 
 app.use((error, _req, res, _next) => {
-  if (!(error instanceof AppError)) console.error(error);
   const payload = errorResponse(error);
   const statusCode = error?.statusCode ?? error?.status ?? 500;
   res.status(statusCode).json(payload);

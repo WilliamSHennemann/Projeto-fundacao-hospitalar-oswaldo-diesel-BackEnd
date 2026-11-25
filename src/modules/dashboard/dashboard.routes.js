@@ -58,17 +58,26 @@ router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandle
   if (databaseConfigured) {
     const where = dbWhere(filters);
     const result = await query(
-      `SELECT COUNT(*)::integer AS total,
+      `SELECT COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id))::integer AS total,
               COUNT(*) FILTER (
-                WHERE p.status = 'parcial'
+                WHERE EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)
+                  AND (p.status = 'parcial'
                    OR (p.status = 'em_andamento' AND p.ultima_atividade <= NOW() - (
                      COALESCE((SELECT (c.valor->>'valor')::integer FROM configuracao c
                                WHERE c.hospital_id = (SELECT hospital_id FROM setor s WHERE s.id = p.setor_id)
                                  AND c.chave = 'minutos_abandono'), 30) * INTERVAL '1 minute'
-                   ))
+                   )))
+                )
               )::integer AS parciais,
-              AVG(p.media_parcial) AS media,
-              ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas
+              COUNT(*) FILTER (
+                WHERE EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)
+                  AND p.status = 'concluida'
+              )::integer AS concluidas,
+              AVG(p.media_parcial) FILTER (WHERE EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)) AS media,
+              ARRAY_AGG(p.nps_nota) FILTER (
+                WHERE p.nps_nota IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)
+              ) AS notas
        FROM pesquisa p ${where.sql}`,
       where.values,
     );
@@ -77,17 +86,23 @@ router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandle
       nps_geral: calculateNps((row.notas ?? []).map(Number)),
       media_geral: row.media === null ? null : Number(Number(row.media).toFixed(1)),
       total_pesquisas: row.total,
+      total_concluidas: row.concluidas,
+      total_parciais: row.parciais,
       percentual_parciais: row.total ? (row.parciais / row.total) * 100 : 0,
       periodo: filters.inicio || filters.fim ? { inicio: filters.inicio ?? null, fim: filters.fim ?? null } : 'all',
     });
   }
-  const pesquisas = appStore.pesquisas.filter((item) => matchesFilters(item, filters));
+  const pesquisas = appStore.pesquisas.filter((item) => matchesFilters(item, filters)
+    && appStore.respostas.some((answer) => answer.pesquisa_id === item.id));
   const limite = Number(appStore.configuracoes.find((item) => item.chave === 'minutos_abandono')?.valor?.valor ?? 30);
   const parciais = pesquisas.filter((item) => isPesquisaParcial(item, limite)).length;
+  const concluidas = pesquisas.filter((item) => item.status === 'concluida').length;
   return res.json({
     nps_geral: calculateNps(pesquisas.filter((item) => item.nps_nota !== null).map((item) => item.nps_nota)),
     media_geral: calculateAverage(pesquisas.map((item) => item.media_parcial)),
     total_pesquisas: pesquisas.length,
+    total_concluidas: concluidas,
+    total_parciais: parciais,
     percentual_parciais: pesquisas.length ? (parciais / pesquisas.length) * 100 : 0,
     periodo: filters.inicio || filters.fim ? { inicio: filters.inicio ?? null, fim: filters.fim ?? null } : 'all',
   });

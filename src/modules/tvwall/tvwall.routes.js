@@ -22,9 +22,11 @@ router.get('/tvwall/publico', asyncHandler(async (req, res) => {
     const [surveys, sectors, compliments] = await Promise.all([
       query(`SELECT ARRAY_AGG(nps_nota) FILTER (WHERE nps_nota IS NOT NULL) AS notas,
                     ARRAY_AGG(media_parcial) FILTER (WHERE media_parcial IS NOT NULL) AS medias
-             FROM pesquisa`),
+             FROM pesquisa p
+             WHERE EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)`),
       query(`SELECT s.nome, s.slug, ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas
              FROM setor s LEFT JOIN pesquisa p ON p.setor_id = s.id
+             AND EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)
              WHERE s.ativo = TRUE GROUP BY s.id ORDER BY s.id`),
       query(`SELECT COUNT(*)::integer AS total FROM manifestacao WHERE tipo = 'elogio'`),
     ]);
@@ -37,15 +39,17 @@ router.get('/tvwall/publico', asyncHandler(async (req, res) => {
       cache_seconds: 30,
     });
   }
-  const notas = appStore.pesquisas.filter((item) => item.nps_nota !== null).map((item) => item.nps_nota);
-  const medias = appStore.pesquisas.filter((item) => item.media_parcial !== null).map((item) => item.media_parcial);
+  const pesquisasComResposta = appStore.pesquisas.filter((item) =>
+    appStore.respostas.some((answer) => answer.pesquisa_id === item.id));
+  const notas = pesquisasComResposta.filter((item) => item.nps_nota !== null).map((item) => item.nps_nota);
+  const medias = pesquisasComResposta.filter((item) => item.media_parcial !== null).map((item) => item.media_parcial);
   return res.json({
     nps_geral: calculateNps(notas),
     media_geral: calculateAverage(medias),
     setores: appStore.setores.filter((sector) => sector.ativo).map((sector) => ({
       nome: sector.nome,
       slug: sector.slug,
-      nps: calculateNps(appStore.pesquisas.filter((item) => item.setor_id === sector.id && item.nps_nota !== null).map((item) => item.nps_nota)),
+      nps: calculateNps(pesquisasComResposta.filter((item) => item.setor_id === sector.id && item.nps_nota !== null).map((item) => item.nps_nota)),
     })),
     elogios_gerais: appStore.manifestacoes.filter((item) => item.tipo === 'elogio').length,
     cache_seconds: 30,
@@ -59,14 +63,16 @@ router.get('/tvwall', requireAuth, enforceUserSectorScope(), asyncHandler(async 
       query(
         `SELECT ARRAY_AGG(nps_nota) FILTER (WHERE nps_nota IS NOT NULL) AS notas,
                 ARRAY_AGG(media_parcial) FILTER (WHERE media_parcial IS NOT NULL) AS medias
-         FROM pesquisa
-         WHERE ($1::integer IS NULL OR setor_id = $1)`,
+        FROM pesquisa p
+        WHERE ($1::integer IS NULL OR setor_id = $1)
+          AND EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)`,
         [setorId],
       ),
       query(
         `SELECT s.nome, s.slug,
                 ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas
          FROM setor s LEFT JOIN pesquisa p ON p.setor_id = s.id
+         AND EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)
          WHERE s.ativo = TRUE AND ($1::integer IS NULL OR s.id = $1)
          GROUP BY s.id ORDER BY s.id`,
         [setorId],
@@ -92,7 +98,9 @@ router.get('/tvwall', requireAuth, enforceUserSectorScope(), asyncHandler(async 
     });
   }
 
-  const pesquisas = appStore.pesquisas.filter((item) => !setorId || item.setor_id === setorId);
+  const pesquisas = appStore.pesquisas.filter((item) =>
+    (!setorId || item.setor_id === setorId)
+    && appStore.respostas.some((answer) => answer.pesquisa_id === item.id));
   const notas = pesquisas.filter((item) => item.nps_nota !== null).map((item) => item.nps_nota);
   const medias = pesquisas.filter((item) => item.media_parcial !== null).map((item) => item.media_parcial);
 

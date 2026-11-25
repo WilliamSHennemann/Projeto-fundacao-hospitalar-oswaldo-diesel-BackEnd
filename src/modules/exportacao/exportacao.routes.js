@@ -57,10 +57,20 @@ async function getSectorReport(filters) {
     const result = await query(
       `SELECT s.id AS setor_id, s.nome,
               COUNT(p.id)::integer AS total_pesquisas,
+              COUNT(p.id) FILTER (WHERE p.status = 'concluida')::integer AS concluidas,
+              COUNT(p.id) FILTER (
+                WHERE p.status = 'parcial'
+                   OR (p.status = 'em_andamento' AND p.ultima_atividade <= NOW() - (
+                     COALESCE((SELECT (c.valor->>'valor')::integer FROM configuracao c
+                               WHERE c.hospital_id = s.hospital_id AND c.chave = 'minutos_abandono'), 30)
+                     * INTERVAL '1 minute'))
+              )::integer AS parciais,
               AVG(p.media_parcial) FILTER (WHERE p.media_parcial IS NOT NULL) AS media,
               ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas
        FROM setor s
-       LEFT JOIN pesquisa p ON p.setor_id = s.id${surveyConditions.length ? ` AND ${surveyConditions.join(' AND ')}` : ''}
+       LEFT JOIN pesquisa p ON p.setor_id = s.id
+         AND EXISTS (SELECT 1 FROM resposta r WHERE r.pesquisa_id = p.id)
+         ${surveyConditions.length ? `AND ${surveyConditions.join(' AND ')}` : ''}
        WHERE ${conditions.join(' AND ')}
        GROUP BY s.id
        ORDER BY s.nome`,
@@ -70,6 +80,8 @@ async function getSectorReport(filters) {
       setor_id: row.setor_id,
       setor: row.nome,
       total_pesquisas: row.total_pesquisas,
+      concluidas: row.concluidas,
+      parciais: row.parciais,
       media: row.media === null ? null : Number(Number(row.media).toFixed(1)),
       nps: calculateNps((row.notas ?? []).map(Number)),
     }));
@@ -78,11 +90,19 @@ async function getSectorReport(filters) {
   const activeSectors = appStore.setores.filter((sector) => sector.ativo
     && (!filters.setor_id || sector.id === filters.setor_id));
   return activeSectors.map((sector) => {
-    const surveys = appStore.pesquisas.filter((survey) => survey.setor_id === sector.id && matchesFilters(survey, filters));
+    const surveys = appStore.pesquisas.filter((survey) => survey.setor_id === sector.id
+      && matchesFilters(survey, filters)
+      && appStore.respostas.some((answer) => answer.pesquisa_id === survey.id));
+    const limite = Number(appStore.configuracoes.find((item) => item.chave === 'minutos_abandono')?.valor?.valor ?? 30);
+    const isPartial = (survey) => survey.status === 'parcial'
+      || (survey.status === 'em_andamento'
+        && Date.now() - new Date(survey.ultima_atividade ?? survey.data_hora).getTime() >= limite * 60000);
     return {
       setor_id: sector.id,
       setor: sector.nome,
       total_pesquisas: surveys.length,
+      concluidas: surveys.filter((survey) => survey.status === 'concluida').length,
+      parciais: surveys.filter(isPartial).length,
       media: calculateAverage(surveys.map((survey) => survey.media_parcial)),
       nps: calculateNps(surveys.filter((survey) => survey.nps_nota !== null && survey.nps_nota !== undefined).map((survey) => survey.nps_nota)),
     };
@@ -112,8 +132,8 @@ function excelColumn(index) {
 
 function createExcelReport(rows, filters) {
   const reportRows = [
-    ['Setor', 'Total de pesquisas', 'Média das avaliações', 'NPS'],
-    ...rows.map((row) => [row.setor, row.total_pesquisas, row.media, row.nps]),
+    ['Setor', 'Total de pesquisas', 'Concluídas', 'Parciais', 'Média das avaliações', 'NPS'],
+    ...rows.map((row) => [row.setor, row.total_pesquisas, row.concluidas, row.parciais, row.media, row.nps]),
     ['Período inicial', filters.inicio ?? 'Não informado'],
     ['Período final', filters.fim ?? 'Não informado'],
   ];
@@ -136,7 +156,7 @@ function createExcelReport(rows, filters) {
     'xl/workbook.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Resultados por setor" sheetId="1" r:id="rId1"/></sheets></workbook>'),
     'xl/_rels/workbook.xml.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
     'xl/styles.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'),
-    'xl/worksheets/sheet1.xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="23" customWidth="1"/><col min="4" max="4" width="12" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData></worksheet>`),
+    'xl/worksheets/sheet1.xml': strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="2" width="22" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="12" customWidth="1"/><col min="5" max="5" width="23" customWidth="1"/><col min="6" max="6" width="12" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData></worksheet>`),
   };
   return Buffer.from(zipSync(files, { level: 6 }));
 }
@@ -157,8 +177,10 @@ async function createPdfReport(rows, filters) {
     const columns = [
       { title: 'Setor', x: 40, width: 190 },
       { title: 'Pesquisas', x: 235, width: 85 },
-      { title: 'Média', x: 325, width: 90 },
-      { title: 'NPS', x: 420, width: 100 },
+      { title: 'Concluídas', x: 325, width: 70 },
+      { title: 'Parciais', x: 400, width: 60 },
+      { title: 'Média', x: 465, width: 45 },
+      { title: 'NPS', x: 515, width: 40 },
     ];
     const drawHeader = () => {
       const top = document.y;
@@ -175,7 +197,7 @@ async function createPdfReport(rows, filters) {
         drawHeader();
       }
       const top = document.y;
-      const values = [row.setor, String(row.total_pesquisas), row.media === null ? '-' : row.media.toFixed(1), row.nps.toFixed(1)];
+      const values = [row.setor, String(row.total_pesquisas), String(row.concluidas), String(row.parciais), row.media === null ? '-' : row.media.toFixed(1), row.nps.toFixed(1)];
       const heights = values.map((value, index) => document.heightOfString(value, { width: columns[index].width }));
       const rowHeight = Math.max(...heights) + 8;
       values.forEach((value, index) => document.text(value, columns[index].x, top, { width: columns[index].width }));

@@ -102,6 +102,22 @@ export const openApiDocument = {
         responses: { '201': { description: 'Manifestação registrada' }, '400': { description: 'Dados inválidos' }, '409': { description: 'Limite ou pesquisa concluída' } },
       },
     },
+    '/pesquisas/{id}/abandonar': {
+      post: {
+        summary: 'Marca uma pesquisa como parcial',
+        security: [],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Status atualizado ou mantido' } },
+      },
+    },
+    '/pesquisas/{id}/progresso': {
+      get: {
+        summary: 'Consulta o progresso de uma pesquisa',
+        security: [],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Status, total e IDs respondidos' } },
+      },
+    },
     '/tvwall/publico': {
       get: {
         summary: 'TV Wall pública agregada',

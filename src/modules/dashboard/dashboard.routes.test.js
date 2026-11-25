@@ -7,7 +7,10 @@ let insertedSurveyId;
 let temporaryUserId;
 
 afterEach(() => {
-  if (insertedSurveyId) appStore.pesquisas = appStore.pesquisas.filter((item) => item.id !== insertedSurveyId);
+  if (insertedSurveyId) {
+    appStore.pesquisas = appStore.pesquisas.filter((item) => item.id !== insertedSurveyId);
+    appStore.respostas = appStore.respostas.filter((item) => item.pesquisa_id !== insertedSurveyId);
+  }
   if (temporaryUserId) appStore.usuarios = appStore.usuarios.filter((item) => item.id !== temporaryUserId);
   insertedSurveyId = undefined;
   temporaryUserId = undefined;
@@ -19,6 +22,7 @@ describe('dashboard filters and permissions', () => {
     insertedSurveyId = created.body.pesquisa_id;
     const survey = appStore.pesquisas.find((item) => item.id === insertedSurveyId);
     survey.data_hora = '2020-06-15T12:00:00.000Z';
+    appStore.respostas.push({ id: 900001, pesquisa_id: insertedSurveyId, pergunta_id: 1, valor: 5, texto: null, opcao_id: null });
     const login = await request(app).post('/api/auth/login').send({ email: 'super@fundacao.com', senha: 'super123' });
     const auth = { Authorization: `Bearer ${login.body.token}` };
     const query = '?inicio=2020-06-15&fim=2020-06-15&setor_id=1';

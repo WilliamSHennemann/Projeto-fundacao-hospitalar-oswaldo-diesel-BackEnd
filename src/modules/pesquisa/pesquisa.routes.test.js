@@ -119,4 +119,27 @@ describe('public survey endpoints', () => {
     expect(invalidFace.status).toBe(400);
     expect(invalidFace.body.codigo).toBe('RESPOSTA_INVALIDA');
   });
+
+  it('abandona, lista progresso e reabre uma pesquisa parcial', async () => {
+    const create = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: true });
+    const headers = { 'X-Pesquisa-Token': create.body.token };
+    await request(app).put(`/api/pesquisas/${create.body.pesquisa_id}/respostas/1`).set(headers).send({ valor: 5, pergunta_id: 1 });
+
+    const abandon = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/abandonar`).set(headers);
+    expect(abandon.status).toBe(200);
+    expect(abandon.body).toEqual({ ok: true, status: 'parcial' });
+
+    const progress = await request(app).get(`/api/pesquisas/${create.body.pesquisa_id}/progresso`).set(headers);
+    expect(progress.status).toBe(200);
+    expect(progress.body.status).toBe('parcial');
+    expect(progress.body.respondidas).toContain(1);
+
+    const reanswer = await request(app).put(`/api/pesquisas/${create.body.pesquisa_id}/respostas/7`).set(headers).send({ valor: 10, pergunta_id: 7 });
+    expect(reanswer.status).toBe(200);
+    expect(appStore.pesquisas.find((item) => item.id === create.body.pesquisa_id).status).toBe('em_andamento');
+
+    await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/finalizar`).set(headers);
+    const abandonFinished = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/abandonar`).set(headers);
+    expect(abandonFinished.body.status).toBe('concluida');
+  });
 });

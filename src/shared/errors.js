@@ -17,6 +17,7 @@ export const errorResponse = (error) => {
     };
   }
 
+  console.error(error);
   return {
     erro: 'Erro interno inesperado',
     codigo: 'INTERNAL_ERROR',

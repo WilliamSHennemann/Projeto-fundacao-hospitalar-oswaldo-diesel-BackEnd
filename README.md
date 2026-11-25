@@ -86,6 +86,14 @@ A pesquisa pode coletar nome e telefone somente quando o paciente autoriza conta
 
 A aplicação foi projetada para funcionar com Postgres em produção e com fallback em memória para execução local e testes quando a conexão ao banco não está disponível.
 
+### Métricas e pesquisas parciais
+
+- O NPS considera somente pesquisas que responderam à pergunta geral de recomendação.
+- A média das avaliações inclui respostas de rostinho de pesquisas concluídas e parciais.
+- Uma pesquisa só entra nos totais após possuir pelo menos uma resposta.
+- Pesquisas com status `concluida` são contabilizadas como completas; `parcial` inclui pesquisas explicitamente abandonadas ou inativas além do prazo configurado em `minutos_abandono`.
+- Exportações Excel e PDF apresentam por setor as colunas `Concluídas` e `Parciais`, respeitando o setor vinculado à conta gestora.
+
 ## Endpoints principais
 
 - `GET /api/setores`

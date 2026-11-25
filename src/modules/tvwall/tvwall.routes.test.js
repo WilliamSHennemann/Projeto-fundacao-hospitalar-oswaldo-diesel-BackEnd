@@ -12,6 +12,7 @@ let insertedManifestationIds = [];
 afterEach(() => {
   if (temporaryUserId) appStore.usuarios = appStore.usuarios.filter((user) => user.id !== temporaryUserId);
   appStore.pesquisas = appStore.pesquisas.filter((survey) => !insertedSurveyIds.includes(survey.id));
+  appStore.respostas = appStore.respostas.filter((answer) => !insertedSurveyIds.includes(answer.pesquisa_id));
   appStore.manifestacoes = appStore.manifestacoes.filter((item) => !insertedManifestationIds.includes(item.id));
   temporaryUserId = undefined;
   insertedSurveyIds = [];
@@ -25,6 +26,10 @@ describe('TV Wall sector access', () => {
     appStore.pesquisas.push(
       { id: surveyIdStart, setor_id: 1, nps_nota: 10, media_parcial: 5 },
       { id: surveyIdStart + 1, setor_id: 2, nps_nota: 0, media_parcial: 1 },
+    );
+    appStore.respostas.push(
+      { id: 900001, pesquisa_id: surveyIdStart, pergunta_id: 7, valor: 10, texto: null, opcao_id: null },
+      { id: 900002, pesquisa_id: surveyIdStart + 1, pergunta_id: 7, valor: 0, texto: null, opcao_id: null },
     );
     const manifestationIdStart = Math.max(0, ...appStore.manifestacoes.map((item) => item.id)) + 1;
     insertedManifestationIds = [manifestationIdStart, manifestationIdStart + 1];

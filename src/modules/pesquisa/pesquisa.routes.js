@@ -241,6 +241,53 @@ router.post('/pesquisas', pesquisaLimiter, asyncHandler(async (req, res) => {
   return res.status(201).json({ pesquisa_id: pesquisa.id, token: pesquisa.token, setor: setor.slug });
 }));
 
+router.post('/pesquisas/:id/abandonar', requirePesquisaToken, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (databaseConfigured) {
+    const result = await query('SELECT id, status FROM pesquisa WHERE id = $1', [id]);
+    const pesquisa = result.rows[0];
+    if (!pesquisa) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    if (pesquisa.status === 'concluida' || pesquisa.status === 'parcial') {
+      return res.json({ ok: true, status: pesquisa.status });
+    }
+    await query("UPDATE pesquisa SET status = 'parcial', ultima_atividade = NOW() WHERE id = $1", [id]);
+    return res.json({ ok: true, status: 'parcial' });
+  }
+  const pesquisa = getPesquisaById(id);
+  if (!pesquisa) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+  if (pesquisa.status === 'em_andamento') pesquisa.status = 'parcial';
+  return res.json({ ok: true, status: pesquisa.status });
+}));
+
+router.get('/pesquisas/:id/progresso', requirePesquisaToken, asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (databaseConfigured) {
+    const result = await query(
+      `SELECT p.status,
+              (SELECT COUNT(*)::integer FROM pergunta pq
+               WHERE pq.ativo = TRUE AND (pq.setor_id = p.setor_id OR pq.geral = TRUE OR pq.todos_setores = TRUE)) AS total,
+              COALESCE((SELECT json_agg(r.pergunta_id ORDER BY r.pergunta_id)
+                        FROM resposta r WHERE r.pesquisa_id = p.id), '[]'::json) AS respondidas
+       FROM pesquisa p WHERE p.id = $1`,
+      [id],
+    );
+    if (!result.rowCount) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    return res.json({
+      status: result.rows[0].status,
+      respondidas: result.rows[0].respondidas,
+      total: result.rows[0].total,
+    });
+  }
+  const pesquisa = getPesquisaById(id);
+  if (!pesquisa) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+  const respondidas = [...new Set(appStore.respostas
+    .filter((item) => item.pesquisa_id === id)
+    .map((item) => item.pergunta_id))];
+  const total = appStore.perguntas.filter((item) => item.ativo
+    && (item.setor_id === pesquisa.setor_id || item.geral || item.todos_setores)).length;
+  return res.json({ status: pesquisa.status, respondidas, total });
+}));
+
 router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHandler(async (req, res) => {
   const payload = respostaSchema.safeParse(req.body);
   if (!payload.success) {
@@ -297,7 +344,8 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
       : pesquisaDb.nps_nota;
     await query(
       `UPDATE pesquisa
-       SET media_parcial = $2, nps_nota = $3, ultima_atividade = NOW()
+       SET media_parcial = $2, nps_nota = $3, ultima_atividade = NOW(),
+           status = CASE WHEN status = 'parcial' THEN 'em_andamento' ELSE status END
        WHERE id = $1`,
       [pesquisaDb.id, mediaParcial, npsNota],
     );
@@ -355,6 +403,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
   }
 
   pesquisa.ultima_atividade = new Date().toISOString();
+  if (pesquisa.status === 'parcial') pesquisa.status = 'em_andamento';
 
   return res.json({
     ok: true,

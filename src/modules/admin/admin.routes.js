@@ -37,6 +37,7 @@ const updateUsuarioSchema = z.object({
   nome: z.string().trim().min(2).max(120).optional(),
   email: z.string().trim().email().max(255).optional(),
   setor_id: z.number().int().positive().optional(),
+  perfil: z.enum(['gestao', 'ouvidoria', 'visualizador', 'admin_setor', 'super_admin']).optional(),
 }).refine((usuario) => Object.keys(usuario).length > 0, {
   message: 'Informe ao menos um campo para atualizar',
 });
@@ -253,7 +254,7 @@ router.delete('/admin/perguntas/:id', ...perguntaAccess, asyncHandler(async (req
   item.ativo = false; return res.json(item);
 }));
 
-router.delete('/admin/perguntas/:id/permanente', ...perguntaAccess, asyncHandler(async (req, res) => {
+router.delete('/admin/perguntas/:id/permanente', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
   if (!(req.user.permissoes ?? []).includes('super_admin')) return res.status(403).json({ erro: 'Permissão insuficiente', codigo: 'FORBIDDEN' });
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ erro: 'ID da pergunta inválido', codigo: 'VALIDATION_ERROR' });
@@ -477,7 +478,8 @@ router.get('/admin/usuarios', requireAuth, requirePermission('super_admin'), asy
       ? listed
       : listed.filter((user) => user.ativo && user.perfil === 'gestao'));
   }
-  res.json(appStore.usuarios.filter((user) => req.query.incluir_inativos === 'true' || (user.ativo && user.perfil === 'gestao')).filter((user) => {
+  res.json(appStore.usuarios.filter((user) => req.query.incluir_inativos === 'true'
+    || (user.ativo && user.perfil === 'gestao')).filter((user) => {
     const profilePermissions = appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes
       ?? (user.perfil ? [user.perfil] : []);
     return true;
@@ -524,10 +526,27 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
           throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
         }
       }
-      const duplicate = await client.query('SELECT 1 FROM usuario WHERE LOWER(email) = LOWER($1)', [email]);
-      if (duplicate.rowCount) {
-        throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
+      const inactive = await client.query(
+        'SELECT id FROM usuario WHERE LOWER(email) = LOWER($1) AND ativo = FALSE',
+        [email],
+      );
+      if (inactive.rowCount) {
+        const reactivated = await client.query(
+          `UPDATE usuario
+           SET nome = $2, perfil_id = $3, setor_id = $4, ativo = TRUE, senha_hash = $5
+           WHERE id = $1
+           RETURNING id, nome, email, setor_id`,
+          [inactive.rows[0].id, data.nome, profileResult.rows[0].id, data.setor_id ?? null, senhaHash],
+        );
+        await client.query('COMMIT');
+        return res.status(201).json({
+          ...reactivated.rows[0],
+          perfil: requestedPerfil,
+          permissoes: requestedPerfil === 'gestao' ? gestorPermissions : [role],
+        });
       }
+      const duplicate = await client.query('SELECT 1 FROM usuario WHERE LOWER(email) = LOWER($1)', [email]);
+      if (duplicate.rowCount) throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
       const inserted = await client.query(
         `INSERT INTO usuario (nome, email, perfil_id, setor_id, ativo, senha_hash)
          VALUES ($1, $2, $3, $4, TRUE, $5)
@@ -557,6 +576,25 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
   if (['gestao', 'admin_setor'].includes(requestedPerfil)) {
     const sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
     if (!sector) throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+  }
+  const inactive = appStore.usuarios.find((item) => item.email.toLowerCase() === email && !item.ativo);
+  if (inactive) {
+    Object.assign(inactive, {
+      nome: data.nome,
+      perfil_id: profile.id,
+      perfil: requestedPerfil,
+      setor_id: data.setor_id ?? null,
+      ativo: true,
+      senha_hash: await bcrypt.hash(data.senha, 10),
+    });
+    return res.status(201).json({
+      id: inactive.id,
+      nome: inactive.nome,
+      email: inactive.email,
+      perfil: requestedPerfil,
+      permissoes: requestedPerfil === 'gestao' ? gestorPermissions : [role],
+      setor_id: inactive.setor_id,
+    });
   }
   if (appStore.usuarios.some((item) => item.email.toLowerCase() === email)) {
     throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
@@ -592,6 +630,15 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
   }
   const id = Number(req.params.id);
   const data = parsed.data;
+  if (data.perfil === 'super_admin'
+    && data.nome === undefined
+    && data.email === undefined
+    && data.setor_id === undefined) {
+    return res.status(400).json({
+      erro: 'Não é permitido criar ou atribuir o perfil super_admin pela API',
+      codigo: 'VALIDATION_ERROR',
+    });
+  }
   if (databaseConfigured) {
     const client = await pool.connect();
     try {
@@ -657,6 +704,16 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
   if (data.nome !== undefined) user.nome = data.nome;
   user.email = email;
   if (data.setor_id !== undefined) user.setor_id = data.setor_id;
+  if (data.perfil !== undefined && data.perfil !== 'super_admin') {
+    if (['gestao', 'admin_setor'].includes(data.perfil) && data.setor_id === undefined && user.setor_id == null) {
+      throw new AppError('setor_id é obrigatório para este perfil', 400, 'VALIDATION_ERROR');
+    }
+    const role = data.perfil === 'visualizador' ? 'visu' : data.perfil;
+    const profile = appStore.perfis.find((item) => item.permissoes.includes(role));
+    if (!profile) throw new AppError('Perfil não configurado', 500, 'PROFILE_NOT_CONFIGURED');
+    user.perfil = data.perfil;
+    user.perfil_id = profile.id;
+  }
   return res.json({
     id: user.id,
     nome: user.nome,
