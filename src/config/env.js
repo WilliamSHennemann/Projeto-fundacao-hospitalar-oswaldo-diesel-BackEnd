@@ -16,7 +16,13 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET ?? 'change-me',
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60000),
-  rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 120),
+  rateLimitMax: Number(process.env.RATE_LIMIT_MAX ?? 600),
+  loginRateLimitWindowMs: Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS ?? 900000),
+  loginRateLimitMax: Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10),
+  pesquisaRateLimitWindowMs: Number(process.env.PESQUISA_RATE_LIMIT_WINDOW_MS ?? 600000),
+  pesquisaRateLimitMax: Number(process.env.PESQUISA_RATE_LIMIT_MAX ?? 300),
+  tvwallKey: process.env.TVWALL_KEY,
+  docsEnabled: (process.env.DOCS_ENABLED ?? 'true').toLowerCase() !== 'false',
 };
 
 if (env.nodeEnv === 'production') {

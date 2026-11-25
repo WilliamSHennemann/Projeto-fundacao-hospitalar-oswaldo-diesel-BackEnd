@@ -70,6 +70,18 @@ automaticamente.
 - `src/config` — configuração e conexão
 - `database` — migrations e seed SQL
 
+## Ambiente e proteção
+
+- `RATE_LIMIT_MAX` (padrão `600`) controla o limite global por IP em `RATE_LIMIT_WINDOW_MS` (padrão `60000 ms`).
+- `LOGIN_RATE_LIMIT_MAX` (padrão `10`) e `LOGIN_RATE_LIMIT_WINDOW_MS` (padrão `900000 ms`) limitam tentativas de login por combinação IP/e-mail.
+- `PESQUISA_RATE_LIMIT_MAX` (padrão `300`) e `PESQUISA_RATE_LIMIT_WINDOW_MS` (padrão `600000 ms`) limitam criação de pesquisas por IP.
+- `TVWALL_KEY` deve ter pelo menos 24 caracteres para habilitar `GET /api/tvwall/publico`.
+- `DOCS_ENABLED=false` remove a interface Swagger em `/docs`.
+
+## Dados pessoais e LGPD
+
+A pesquisa pode coletar nome e telefone somente quando o paciente autoriza contato da Ouvidoria. A finalidade é permitir retorno sobre elogios, reclamações ou sugestões. Nome e telefone podem ser removidos com `DELETE /api/admin/pacientes/:id`; essa operação exige `super_admin` e anonimiza o paciente e os canais de contato das manifestações relacionadas.
+
 ## Observações
 
 A aplicação foi projetada para funcionar com Postgres em produção e com fallback em memória para execução local e testes quando a conexão ao banco não está disponível.
@@ -99,6 +111,13 @@ A aplicação foi projetada para funcionar com Postgres em produção e com fall
 - `DELETE /api/admin/perguntas/:id`
 - `PATCH /api/admin/perguntas/reordenar`
 - `GET /api/tvwall`
+- `GET /api/tvwall/publico?chave=...`
+- `POST /api/pesquisas/:id/manifestacoes`
+- `GET /api/manifestacoes?status=&tipo=&limit=&offset=`
+- `PATCH /api/admin/usuarios/:id/senha`
+- `POST /api/admin/usuarios/:id/reativar`
+- `POST /api/auth/senha`
+- `DELETE /api/admin/pacientes/:id`
 - `GET /docs`
 
 ### Documentação interativa e testes
@@ -172,3 +191,7 @@ Uma média baixa nas perguntas anteriores não altera essa decisão.
 Em produção, configure `DATABASE_URL` (ou o conjunto `DB_*`), `JWT_SECRET` com
 ao menos 32 caracteres e `CORS_ORIGIN` com o domínio exato do frontend. O servidor
 recusa iniciar em produção sem banco, com CORS curinga ou com segredo JWT fraco.
+
+## Supabase RLS
+
+Execute `database/migrations/005_rls_hardening.sql` após o schema. A migração ativa RLS em todas as tabelas SGEP e remove as políticas públicas permissivas. Em **Supabase > Authentication/API**, confirme que nenhuma função administrativa ou fluxo público depende da Data API com a chave anon; o backend continua acessando o banco diretamente com o usuário PostgreSQL configurado em `DATABASE_URL` ou `DB_*`.

@@ -20,6 +20,6 @@ export const errorResponse = (error) => {
   return {
     erro: 'Erro interno inesperado',
     codigo: 'INTERNAL_ERROR',
-    detalhes: error instanceof Error ? error.message : undefined,
+    detalhes: undefined,
   };
 };

@@ -7,6 +7,7 @@ import { requireAuth, requireAnyPermission, requirePermission, enforceUserSector
 import { asyncHandler, databaseConfigured, pool, query } from '../../config/database.js';
 
 const router = Router();
+const reservedSectorSlugs = new Set(['admin', 'docs', 'tvwall', 'pesquisa', 'api', 'health']);
 
 const setorSchema = z.object({
   nome: z.string().min(2),
@@ -25,8 +26,12 @@ const setorPatchSchema = z.object({
 const createUsuarioSchema = z.object({
   nome: z.string().trim().min(2).max(120),
   email: z.string().trim().email().max(255),
-  senha: z.string().min(8),
-  setor_id: z.number().int().positive(),
+  senha: z.string().min(8).max(72),
+  perfil: z.enum(['gestao', 'ouvidoria', 'visualizador', 'admin_setor', 'super_admin']).default('gestao'),
+  setor_id: z.number().int().positive().optional(),
+}).refine((data) => !['gestao', 'admin_setor'].includes(data.perfil) || Number.isInteger(data.setor_id), {
+  message: 'setor_id é obrigatório para este perfil',
+  path: ['setor_id'],
 });
 const updateUsuarioSchema = z.object({
   nome: z.string().trim().min(2).max(120).optional(),
@@ -49,7 +54,7 @@ const normalizeSetorSlug = (value) => value
   .replace(/^-|-$/g, '');
 
 const perguntaBaseSchema = z.object({
-  texto: z.string().min(3), tipo: z.enum(['rostinho', 'texto', 'multipla', 'nps']),
+  texto: z.string().min(3).max(2000), tipo: z.enum(['rostinho', 'texto', 'multipla', 'nps']),
   setor_id: z.number().int().positive().nullable().optional(), geral: z.boolean().optional().default(false),
   todos_setores: z.boolean().optional().default(false),
   ordem: z.number().int().positive(), obrigatoria: z.boolean().optional().default(false), ativo: z.boolean().optional().default(true),
@@ -233,20 +238,38 @@ router.put('/admin/perguntas/:id', ...perguntaAccess, asyncHandler(async (req, r
 }));
 
 router.delete('/admin/perguntas/:id', ...perguntaAccess, asyncHandler(async (req, res) => {
-  if (databaseConfigured) { const result = await query('UPDATE pergunta SET ativo=FALSE WHERE id=$1 RETURNING *', [Number(req.params.id)]); if (!result.rowCount) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' }); return res.json(result.rows[0]); }
-  const item = appStore.perguntas.find((q) => q.id === Number(req.params.id)); if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' }); item.ativo = false; return res.json(item);
+  const id = Number(req.params.id);
+  if (databaseConfigured) {
+    const question = await query('SELECT geral, tipo, ativo FROM pergunta WHERE id = $1', [id]);
+    if (!question.rowCount) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
+    if (question.rows[0].geral && question.rows[0].ativo) {
+      const substitutes = await query('SELECT 1 FROM pergunta WHERE geral = TRUE AND ativo = TRUE AND id <> $1 LIMIT 1', [id]);
+      if (!substitutes.rowCount) throw new AppError('Não é possível desativar a única pergunta NPS geral ativa', 409, 'NPS_UNICA');
+    }
+    const result = await query('UPDATE pergunta SET ativo=FALSE WHERE id=$1 RETURNING *', [id]); return res.json(result.rows[0]);
+  }
+  const item = appStore.perguntas.find((q) => q.id === id); if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
+  if (item.geral && item.ativo && !appStore.perguntas.some((q) => q.id !== id && q.geral && q.ativo)) throw new AppError('Não é possível desativar a única pergunta NPS geral ativa', 409, 'NPS_UNICA');
+  item.ativo = false; return res.json(item);
 }));
 
 router.delete('/admin/perguntas/:id/permanente', ...perguntaAccess, asyncHandler(async (req, res) => {
   const id = Number(req.params.id);
+  if (!(req.user.permissoes ?? []).includes('super_admin')) return res.status(403).json({ erro: 'Permissão insuficiente', codigo: 'FORBIDDEN' });
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ erro: 'ID da pergunta inválido', codigo: 'VALIDATION_ERROR' });
   if (databaseConfigured) {
+    const q = await query('SELECT geral, ativo FROM pergunta WHERE id = $1', [id]);
+    if (q.rows[0]?.geral && q.rows[0].ativo) {
+      const substitute = await query('SELECT 1 FROM pergunta WHERE geral = TRUE AND ativo = TRUE AND id <> $1 LIMIT 1', [id]);
+      if (!substitute.rowCount) throw new AppError('Não é possível apagar a única pergunta NPS geral ativa', 409, 'NPS_UNICA');
+    }
     const result = await query('DELETE FROM pergunta WHERE id = $1 RETURNING *', [id]);
     if (!result.rowCount) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
     return res.json({ ok: true, pergunta: result.rows[0] });
   }
   const item = appStore.perguntas.find((question) => question.id === id);
   if (!item) return res.status(404).json({ erro: 'Pergunta não encontrada', codigo: 'PERGUNTA_NOT_FOUND' });
+  if (item.geral && item.ativo && !appStore.perguntas.some((q) => q.id !== id && q.geral && q.ativo)) throw new AppError('Não é possível apagar a única pergunta NPS geral ativa', 409, 'NPS_UNICA');
   appStore.respostas = appStore.respostas.filter((resposta) => resposta.pergunta_id !== id);
   appStore.opcoesResposta = appStore.opcoesResposta.filter((opcao) => opcao.pergunta_id !== id);
   appStore.perguntas = appStore.perguntas.filter((question) => question.id !== id);
@@ -298,6 +321,7 @@ router.post('/admin/setores', requireAuth, requirePermission('super_admin'), asy
 
   const slug = normalizeSetorSlug(payload.data.slug ?? payload.data.nome);
   if (slug.length < 2) return res.status(400).json({ erro: 'Nome ou slug inválido', codigo: 'VALIDATION_ERROR' });
+  if (reservedSectorSlugs.has(slug)) return res.status(400).json({ erro: 'Este slug é reservado', codigo: 'VALIDATION_ERROR' });
   if (!databaseConfigured && appStore.setores.some((item) => item.slug === slug)) return res.status(409).json({ erro: 'Já existe um setor com este slug', codigo: 'SETOR_SLUG_CONFLICT' });
   if (databaseConfigured) {
     try {
@@ -337,6 +361,7 @@ router.patch('/admin/setores/:id', requireAuth, requirePermission('super_admin')
   const changes = payload.data;
   const slug = changes.slug === undefined ? undefined : normalizeSetorSlug(changes.slug);
   if (slug !== undefined && slug.length < 2) return res.status(400).json({ erro: 'Slug inválido', codigo: 'VALIDATION_ERROR' });
+  if (slug !== undefined && reservedSectorSlugs.has(slug)) return res.status(400).json({ erro: 'Este slug é reservado', codigo: 'VALIDATION_ERROR' });
 
   if (databaseConfigured) {
     try {
@@ -429,31 +454,43 @@ router.get('/admin/perfis', requireAuth, requirePermission('super_admin'), async
   res.json(appStore.perfis);
 }));
 
-router.get('/admin/usuarios', requireAuth, requirePermission('super_admin'), asyncHandler(async (_req, res) => {
+router.get('/admin/usuarios', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const result = await query(
-      `SELECT u.id, u.nome, u.email, u.setor_id
+      `SELECT u.id, u.nome, u.email, u.setor_id, u.ativo,
+              p.permissoes->'roles' AS roles
        FROM usuario u JOIN perfil p ON p.id = u.perfil_id
-       WHERE u.ativo = TRUE AND p.permissoes->'roles' = '["gestao"]'::jsonb
+       WHERE ($1::boolean = TRUE OR u.ativo = TRUE)
        ORDER BY u.id`,
+      [req.query.incluir_inativos === 'true'],
     );
-    return res.json(result.rows.map((user) => ({
-      ...user,
-      perfil: 'gestao',
-      permissoes: gestorPermissions,
-    })));
+    const listed = result.rows.map((user) => {
+      const roles = Array.isArray(user.roles) ? user.roles : [];
+      const perfil = roles.includes('super_admin') ? 'super_admin'
+        : roles.includes('ouvidoria') ? 'ouvidoria'
+        : roles.includes('visu') ? 'visualizador'
+        : roles.includes('admin_setor') ? 'admin_setor'
+        : 'gestao';
+      return { id: user.id, nome: user.nome, email: user.email, setor_id: user.setor_id, ativo: user.ativo, perfil, permissoes: roles };
+    });
+    return res.json(req.query.incluir_inativos === 'true'
+      ? listed
+      : listed.filter((user) => user.ativo && user.perfil === 'gestao'));
   }
-  res.json(appStore.usuarios.filter((user) => {
+  res.json(appStore.usuarios.filter((user) => req.query.incluir_inativos === 'true' || (user.ativo && user.perfil === 'gestao')).filter((user) => {
     const profilePermissions = appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes
       ?? (user.perfil ? [user.perfil] : []);
-    return user.ativo && isGestaoProfile(profilePermissions);
+    return true;
   }).map(({ senha_hash, senha, ...user }) => ({
     id: user.id,
     nome: user.nome,
     email: user.email,
     setor_id: user.setor_id ?? null,
-    perfil: 'gestao',
-    permissoes: gestorPermissions,
+    ativo: user.ativo,
+    perfil: user.perfil,
+    permissoes: user.perfil === 'gestao'
+      ? gestorPermissions
+      : appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes ?? [],
   })));
 }));
 
@@ -465,20 +502,27 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
 
   const data = parsed.data;
   const email = data.email.toLowerCase();
+  const requestedPerfil = data.perfil === 'super_admin' ? 'gestao' : data.perfil;
+  const role = requestedPerfil === 'visualizador' ? 'visu' : requestedPerfil;
   if (databaseConfigured) {
     const senhaHash = await bcrypt.hash(data.senha, 10);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       const profileResult = await client.query(
-        `SELECT id FROM perfil WHERE permissoes->'roles' = '["gestao"]'::jsonb ORDER BY id LIMIT 1`,
+        `SELECT id FROM perfil
+         WHERE EXISTS (SELECT 1 FROM jsonb_array_elements_text(permissoes->'roles') r(role) WHERE r.role = $1)
+         ORDER BY id LIMIT 1`,
+        [role],
       );
       if (!profileResult.rowCount) {
-        throw new AppError('Perfil de gestão não configurado', 500, 'GESTAO_PROFILE_NOT_CONFIGURED');
+        throw new AppError('Perfil não configurado', 500, 'PROFILE_NOT_CONFIGURED');
       }
-      const sectorResult = await client.query('SELECT id FROM setor WHERE id = $1 AND ativo = TRUE FOR SHARE', [data.setor_id]);
-      if (!sectorResult.rowCount) {
-        throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+      if (['gestao', 'admin_setor'].includes(requestedPerfil)) {
+        const sectorResult = await client.query('SELECT id FROM setor WHERE id = $1 AND ativo = TRUE FOR SHARE', [data.setor_id]);
+        if (!sectorResult.rowCount) {
+          throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+        }
       }
       const duplicate = await client.query('SELECT 1 FROM usuario WHERE LOWER(email) = LOWER($1)', [email]);
       if (duplicate.rowCount) {
@@ -491,7 +535,11 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
         [data.nome, email, profileResult.rows[0].id, data.setor_id, senhaHash],
       );
       await client.query('COMMIT');
-      return res.status(201).json({ ...inserted.rows[0], perfil: 'gestao', permissoes: gestorPermissions });
+      return res.status(201).json({
+        ...inserted.rows[0],
+        perfil: requestedPerfil,
+        permissoes: requestedPerfil === 'gestao' ? gestorPermissions : [role],
+      });
     } catch (error) {
       await client.query('ROLLBACK');
       if (error.code === '23505') {
@@ -503,10 +551,13 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
     }
   }
 
-  const profile = appStore.perfis.find((item) => isGestaoProfile(item.permissoes));
-  if (!profile) throw new AppError('Perfil de gestão não configurado', 500, 'GESTAO_PROFILE_NOT_CONFIGURED');
-  const sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
-  if (!sector) throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+  const profile = appStore.perfis.find((item) =>
+    !item.permissoes.includes('super_admin') && item.permissoes.includes(role));
+  if (!profile) throw new AppError('Perfil não configurado', 500, 'PROFILE_NOT_CONFIGURED');
+  if (['gestao', 'admin_setor'].includes(requestedPerfil)) {
+    const sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
+    if (!sector) throw new AppError('Setor não encontrado ou inativo', 404, 'SETOR_NOT_FOUND');
+  }
   if (appStore.usuarios.some((item) => item.email.toLowerCase() === email)) {
     throw new AppError('E-mail já cadastrado', 409, 'EMAIL_EXISTS');
   }
@@ -515,8 +566,8 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
     nome: data.nome,
     email,
     perfil_id: profile.id,
-    perfil: 'gestao',
-    setor_id: data.setor_id,
+    perfil: requestedPerfil,
+    setor_id: data.setor_id ?? null,
     ativo: true,
     senha_hash: await bcrypt.hash(data.senha, 10),
   };
@@ -525,8 +576,8 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
     id: item.id,
     nome: item.nome,
     email: item.email,
-    perfil: 'gestao',
-    permissoes: gestorPermissions,
+    perfil: requestedPerfil,
+    permissoes: requestedPerfil === 'gestao' ? gestorPermissions : [role],
     setor_id: item.setor_id,
   });
 }));
@@ -549,7 +600,6 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
         `SELECT u.id, u.nome, u.email, u.setor_id
          FROM usuario u JOIN perfil p ON p.id = u.perfil_id
          WHERE u.id = $1 AND u.ativo = TRUE
-           AND p.permissoes->'roles' = '["gestao"]'::jsonb
          FOR UPDATE OF u`,
         [id],
       );
@@ -591,8 +641,11 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
   const profilePermissions = user
     ? appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes ?? (user.perfil ? [user.perfil] : [])
     : [];
-  if (!user || !isGestaoProfile(profilePermissions)) {
-    throw new AppError('Gestor não encontrado', 404, 'USER_NOT_FOUND');
+  if (!user) {
+    throw new AppError('Usuário não encontrado', 404, 'USER_NOT_FOUND');
+  }
+  if (user.perfil === 'super_admin' || profilePermissions.includes('super_admin')) {
+    throw new AppError('Super administrador não pode ser alterado pela API', 404, 'USER_NOT_FOUND');
   }
   const email = (data.email ?? user.email).toLowerCase();
   if (appStore.usuarios.some((item) => item.id !== id && item.email.toLowerCase() === email)) {
@@ -608,8 +661,8 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
     id: user.id,
     nome: user.nome,
     email: user.email,
-    perfil: 'gestao',
-    permissoes: gestorPermissions,
+    perfil: user.perfil === 'super_admin' ? 'gestao' : user.perfil,
+    permissoes: user.perfil === 'gestao' ? gestorPermissions : profilePermissions,
     setor_id: user.setor_id ?? null,
   });
 }));
@@ -624,7 +677,7 @@ router.delete('/admin/usuarios/:id', requireAuth, requirePermission('super_admin
       `UPDATE usuario AS u SET ativo = FALSE
        FROM perfil AS p
        WHERE u.id = $1 AND u.ativo = TRUE AND p.id = u.perfil_id
-         AND p.permissoes->'roles' = '["gestao"]'::jsonb
+         AND NOT (p.permissoes->'roles' @> '["super_admin"]'::jsonb)
        RETURNING u.id`,
       [id],
     );
@@ -635,10 +688,77 @@ router.delete('/admin/usuarios/:id', requireAuth, requirePermission('super_admin
   const profilePermissions = user
     ? appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes ?? (user.perfil ? [user.perfil] : [])
     : [];
-  if (!user || !isGestaoProfile(profilePermissions)) {
-    throw new AppError('Gestor não encontrado', 404, 'USER_NOT_FOUND');
+  if (!user) {
+    throw new AppError('Usuário não encontrado', 404, 'USER_NOT_FOUND');
+  }
+  if (user.perfil === 'super_admin' || profilePermissions.includes('super_admin')) {
+    throw new AppError('Super administrador não pode ser desativado pela API', 404, 'USER_NOT_FOUND');
   }
   user.ativo = false;
+  return res.json({ ok: true });
+}));
+
+router.patch('/admin/usuarios/:id/senha', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  const parsed = z.object({ senha: z.string().min(8).max(72) }).safeParse(req.body);
+  if (!Number.isInteger(id) || id < 1 || !parsed.success) {
+    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.success ? undefined : parsed.error.flatten() });
+  }
+  const hash = await bcrypt.hash(parsed.data.senha, 10);
+  if (databaseConfigured) {
+    const result = await query('UPDATE usuario SET senha_hash = $2 WHERE id = $1 AND ativo = TRUE RETURNING id', [id, hash]);
+    if (!result.rowCount) throw new AppError('Usuário não encontrado', 404, 'USER_NOT_FOUND');
+  } else {
+    const user = appStore.usuarios.find((item) => item.id === id && item.ativo);
+    if (!user) throw new AppError('Usuário não encontrado', 404, 'USER_NOT_FOUND');
+    user.senha_hash = hash;
+  }
+  return res.json({ ok: true });
+}));
+
+router.post('/admin/usuarios/:id/reativar', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) throw new AppError('ID do usuário inválido', 400, 'VALIDATION_ERROR');
+  if (databaseConfigured) {
+    const duplicateEmailUser = await query('SELECT id, email FROM usuario WHERE id = $1', [id]);
+    if (!duplicateEmailUser.rowCount) throw new AppError('Usuário não encontrado', 404, 'USER_NOT_FOUND');
+    await query('UPDATE usuario SET ativo = TRUE WHERE id = $1', [id]);
+  } else {
+    const user = appStore.usuarios.find((item) => item.id === id);
+    if (!user) throw new AppError('Usuário não encontrado', 404, 'USER_NOT_FOUND');
+    user.ativo = true;
+  }
+  return res.json({ ok: true });
+}));
+
+router.delete('/admin/pacientes/:id', requireAuth, requirePermission('super_admin'), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) throw new AppError('ID do paciente inválido', 400, 'VALIDATION_ERROR');
+  if (databaseConfigured) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query('SELECT id FROM paciente WHERE id = $1 FOR UPDATE', [id]);
+      if (!result.rowCount) throw new AppError('Paciente não encontrado', 404, 'PACIENTE_NOT_FOUND');
+      await client.query('UPDATE paciente SET nome = NULL, telefone = NULL, consentimento = FALSE WHERE id = $1', [id]);
+      await client.query(`UPDATE manifestacao SET canal_contato = NULL
+                          WHERE pesquisa_id IN (SELECT id FROM pesquisa WHERE paciente_id = $1)`, [id]);
+      await client.query('COMMIT');
+      return res.json({ ok: true });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+  const patient = appStore.pacientes.find((item) => item.id === id);
+  if (!patient) throw new AppError('Paciente não encontrado', 404, 'PACIENTE_NOT_FOUND');
+  patient.nome = null;
+  patient.telefone = null;
+  patient.consentimento = false;
+  const surveyIds = new Set(appStore.pesquisas.filter((item) => item.paciente_id === id).map((item) => item.id));
+  appStore.manifestacoes.forEach((item) => { if (surveyIds.has(item.pesquisa_id)) item.canal_contato = null; });
   return res.json({ ok: true });
 }));
 

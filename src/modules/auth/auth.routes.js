@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { AppError } from '../../shared/errors.js';
@@ -8,6 +9,18 @@ import { appStore } from '../../shared/store.js';
 import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
 
 const router = Router();
+const loginLimiter = rateLimit({
+  windowMs: env.loginRateLimitWindowMs,
+  max: env.loginRateLimitMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `${req.ip}:${String(req.body?.email ?? '').trim().toLowerCase()}`,
+  handler: (_req, res) => res.status(429).json({
+    erro: 'Muitas tentativas. Aguarde alguns minutos.',
+    codigo: 'RATE_LIMITED',
+  }),
+});
+const fakePasswordHash = bcrypt.hashSync('senha-falsa-para-tempo-constante', 10);
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -123,7 +136,7 @@ export const enforceUserSectorScope = (sectorParam) => (req, _res, next) => {
   next();
 };
 
-router.post('/auth/login', asyncHandler(async (req, res) => {
+router.post('/auth/login', loginLimiter, asyncHandler(async (req, res) => {
   const payload = loginSchema.safeParse(req.body);
   if (!payload.success) {
     return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
@@ -147,6 +160,7 @@ router.post('/auth/login', asyncHandler(async (req, res) => {
   }
 
   if (!user) {
+    await bcrypt.compare(payload.data.senha, fakePasswordHash);
     return res.status(401).json({ erro: 'Credenciais inválidas', codigo: 'INVALID_CREDENTIALS' });
   }
 
@@ -173,5 +187,29 @@ router.post('/auth/login', asyncHandler(async (req, res) => {
 router.get('/auth/me', requireAuth, (req, res) => {
   res.json({ usuario: req.user });
 });
+
+router.post('/auth/senha', requireAuth, asyncHandler(async (req, res) => {
+  const parsed = z.object({
+    senha_atual: z.string().min(1),
+    nova_senha: z.string().min(8).max(72),
+  }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: parsed.error.flatten() });
+
+  if (databaseConfigured) {
+    const result = await query('SELECT senha_hash FROM usuario WHERE id = $1 AND ativo = TRUE', [req.user.id]);
+    const hash = result.rows[0]?.senha_hash;
+    if (!hash || !(await bcrypt.compare(parsed.data.senha_atual, hash))) {
+      throw new AppError('Senha atual inválida', 400, 'INVALID_PASSWORD');
+    }
+    await query('UPDATE usuario SET senha_hash = $2 WHERE id = $1', [req.user.id, await bcrypt.hash(parsed.data.nova_senha, 10)]);
+    return res.json({ ok: true });
+  }
+  const user = appStore.usuarios.find((item) => item.id === req.user.id && item.ativo);
+  if (!user || !(await bcrypt.compare(parsed.data.senha_atual, user.senha_hash ?? ''))) {
+    throw new AppError('Senha atual inválida', 400, 'INVALID_PASSWORD');
+  }
+  user.senha_hash = await bcrypt.hash(parsed.data.nova_senha, 10);
+  return res.json({ ok: true });
+}));
 
 export default router;

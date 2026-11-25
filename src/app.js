@@ -5,7 +5,7 @@ import rateLimit from 'express-rate-limit';
 import swaggerUi from 'swagger-ui-express';
 import { env } from './config/env.js';
 import { databaseConfigured, query } from './config/database.js';
-import { errorResponse } from './shared/errors.js';
+import { AppError, errorResponse } from './shared/errors.js';
 import { openApiDocument } from './openapi.js';
 
 import pesquisaRoutes from './modules/pesquisa/pesquisa.routes.js';
@@ -19,11 +19,13 @@ import jobsRoutes from './modules/jobs/jobs.routes.js';
 
 export const app = express();
 
+app.set('trust proxy', 1);
 app.use(helmet());
 app.use(
   cors({
     origin: env.corsOrigin === '*' ? true : env.corsOrigin.split(',').map((item) => item.trim()),
     credentials: true,
+    exposedHeaders: ['X-Total-Count'],
   }),
 );
 app.use(express.json({ limit: '1mb' }));
@@ -47,10 +49,12 @@ app.get('/health', async (_req, res, next) => {
   }
 });
 
-app.get('/docs/openapi.json', (_req, res) => {
-  res.json(openApiDocument);
-});
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument, { explorer: true }));
+if (env.docsEnabled) {
+  app.get('/docs/openapi.json', (_req, res) => {
+    res.json(openApiDocument);
+  });
+  app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument, { explorer: true }));
+}
 
 app.use('/api', authRoutes);
 app.use('/api', pesquisaRoutes);
@@ -62,6 +66,7 @@ app.use('/api', adminRoutes);
 app.use('/api', jobsRoutes);
 
 app.use((error, _req, res, _next) => {
+  if (!(error instanceof AppError)) console.error(error);
   const payload = errorResponse(error);
   const statusCode = error?.statusCode ?? error?.status ?? 500;
   res.status(statusCode).json(payload);

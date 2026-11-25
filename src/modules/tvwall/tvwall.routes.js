@@ -3,8 +3,54 @@ import { appStore } from '../../shared/store.js';
 import { calculateAverage, calculateNps } from '../../shared/metrics.js';
 import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
 import { enforceUserSectorScope, requireAuth } from '../auth/auth.routes.js';
+import { env } from '../../config/env.js';
+import { timingSafeEqual } from 'node:crypto';
 
 const router = Router();
+
+router.get('/tvwall/publico', asyncHandler(async (req, res) => {
+  if (!env.tvwallKey || env.tvwallKey.length < 24) {
+    return res.status(404).json({ erro: 'Rota não disponível', codigo: 'NOT_FOUND' });
+  }
+  const supplied = String(req.query.chave ?? req.get('X-TvWall-Key') ?? '');
+  const suppliedBuffer = Buffer.from(supplied);
+  const keyBuffer = Buffer.from(env.tvwallKey);
+  if (suppliedBuffer.length !== keyBuffer.length || !timingSafeEqual(suppliedBuffer, keyBuffer)) {
+    return res.status(401).json({ erro: 'Chave da TV Wall inválida', codigo: 'TVWALL_KEY_INVALID' });
+  }
+  if (databaseConfigured) {
+    const [surveys, sectors, compliments] = await Promise.all([
+      query(`SELECT ARRAY_AGG(nps_nota) FILTER (WHERE nps_nota IS NOT NULL) AS notas,
+                    ARRAY_AGG(media_parcial) FILTER (WHERE media_parcial IS NOT NULL) AS medias
+             FROM pesquisa`),
+      query(`SELECT s.nome, s.slug, ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas
+             FROM setor s LEFT JOIN pesquisa p ON p.setor_id = s.id
+             WHERE s.ativo = TRUE GROUP BY s.id ORDER BY s.id`),
+      query(`SELECT COUNT(*)::integer AS total FROM manifestacao WHERE tipo = 'elogio'`),
+    ]);
+    const row = surveys.rows[0];
+    return res.json({
+      nps_geral: calculateNps((row.notas ?? []).map(Number)),
+      media_geral: calculateAverage((row.medias ?? []).map(Number)),
+      setores: sectors.rows.map((sector) => ({ nome: sector.nome, slug: sector.slug, nps: calculateNps((sector.notas ?? []).map(Number)) })),
+      elogios_gerais: compliments.rows[0].total,
+      cache_seconds: 30,
+    });
+  }
+  const notas = appStore.pesquisas.filter((item) => item.nps_nota !== null).map((item) => item.nps_nota);
+  const medias = appStore.pesquisas.filter((item) => item.media_parcial !== null).map((item) => item.media_parcial);
+  return res.json({
+    nps_geral: calculateNps(notas),
+    media_geral: calculateAverage(medias),
+    setores: appStore.setores.filter((sector) => sector.ativo).map((sector) => ({
+      nome: sector.nome,
+      slug: sector.slug,
+      nps: calculateNps(appStore.pesquisas.filter((item) => item.setor_id === sector.id && item.nps_nota !== null).map((item) => item.nps_nota)),
+    })),
+    elogios_gerais: appStore.manifestacoes.filter((item) => item.tipo === 'elogio').length,
+    cache_seconds: 30,
+  });
+}));
 
 router.get('/tvwall', requireAuth, enforceUserSectorScope(), asyncHandler(async (req, res) => {
   const setorId = req.query.setor_id ? Number(req.query.setor_id) : null;

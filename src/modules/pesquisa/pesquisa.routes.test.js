@@ -81,4 +81,42 @@ describe('public survey endpoints', () => {
     const adequateNps = await request(app).post(`/api/pesquisas/${lowAverageSurvey.body.pesquisa_id}/finalizar`).set('X-Pesquisa-Token', lowAverageSurvey.body.token);
     expect(adequateNps.body).toEqual({ destino: 'agradecimento', motivo: 'nps_adequado' });
   });
+
+  it('registers complaint and contact together, then rejects invalid or excessive manifestations', async () => {
+    const create = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: true });
+    const headers = { 'X-Pesquisa-Token': create.body.token };
+    const invalidConsent = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/manifestacoes`).set(headers).send({
+      tipo: 'reclamacao',
+      descricao: 'Preciso falar com a Ouvidoria',
+      contato: { nome: 'Maria', telefone: '51999999999', consentimento: false },
+    });
+    expect(invalidConsent.status).toBe(400);
+
+    const invalidPhone = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/manifestacoes`).set(headers).send({
+      tipo: 'reclamacao',
+      descricao: 'Preciso falar com a Ouvidoria',
+      contato: { telefone: '123', consentimento: true },
+    });
+    expect(invalidPhone.status).toBe(400);
+
+    for (let index = 0; index < 3; index += 1) {
+      const sent = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/manifestacoes`).set(headers).send(
+        index === 0
+          ? { tipo: 'reclamacao', descricao: 'Preciso falar com a Ouvidoria', contato: { nome: 'Maria', telefone: '5511999999999', consentimento: true } }
+          : { tipo: 'elogio', descricao: 'Atendimento muito bom' },
+      );
+      expect(sent.status).toBe(201);
+    }
+    const fourth = await request(app).post(`/api/pesquisas/${create.body.pesquisa_id}/manifestacoes`).set(headers).send({ tipo: 'sugestao', descricao: 'Outra sugestão' });
+    expect(fourth.status).toBe(409);
+    expect(fourth.body.codigo).toBe('MANIFESTACAO_LIMITE');
+  });
+
+  it('rejects invalid response types and allows the next response only after validation', async () => {
+    const create = await request(app).post('/api/pesquisas').send({ setor_id: 1, anonimo: true });
+    const headers = { 'X-Pesquisa-Token': create.body.token };
+    const invalidFace = await request(app).put(`/api/pesquisas/${create.body.pesquisa_id}/respostas/1`).set(headers).send({ valor: 9, pergunta_id: 1 });
+    expect(invalidFace.status).toBe(400);
+    expect(invalidFace.body.codigo).toBe('RESPOSTA_INVALIDA');
+  });
 });

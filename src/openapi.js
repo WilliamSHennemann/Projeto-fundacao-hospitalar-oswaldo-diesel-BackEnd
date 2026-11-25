@@ -93,6 +93,47 @@ export const openApiDocument = {
   },
   security: [{ bearerAuth: [] }],
   paths: {
+    '/pesquisas/{id}/manifestacoes': {
+      post: {
+        summary: 'Envia elogio, reclamação ou sugestão',
+        security: [],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }, { name: 'X-Pesquisa-Token', in: 'header', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['tipo'], properties: { tipo: { type: 'string', enum: ['elogio', 'reclamacao', 'sugestao'] }, descricao: { type: 'string', maxLength: 2000 }, contato: { type: 'object', required: ['telefone', 'consentimento'], properties: { nome: { type: 'string', maxLength: 120 }, telefone: { type: 'string' }, consentimento: { type: 'boolean', enum: [true] } } } } } } } },
+        responses: { '201': { description: 'Manifestação registrada' }, '400': { description: 'Dados inválidos' }, '409': { description: 'Limite ou pesquisa concluída' } },
+      },
+    },
+    '/tvwall/publico': {
+      get: {
+        summary: 'TV Wall pública agregada',
+        security: [],
+        parameters: [
+          { name: 'chave', in: 'query', required: false, schema: { type: 'string' } },
+          { name: 'X-TvWall-Key', in: 'header', required: false, schema: { type: 'string' } },
+        ],
+        responses: { '200': { description: 'Dados agregados' }, '401': { description: 'Chave inválida' }, '404': { description: 'Rota desabilitada' } },
+      },
+    },
+    '/manifestacoes': {
+      get: {
+        summary: 'Lista manifestações',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'status', in: 'query', schema: { type: 'string', enum: ['aberta', 'em_tratamento', 'concluida'] } },
+          { name: 'tipo', in: 'query', schema: { type: 'string', enum: ['elogio', 'reclamacao', 'sugestao'] } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
+        ],
+        responses: { '200': { description: 'Lista paginada', headers: { 'X-Total-Count': { schema: { type: 'integer' } } } } },
+      },
+    },
+    '/auth/senha': {
+      post: {
+        summary: 'Troca a senha do usuário autenticado',
+        security: [{ bearerAuth: [] }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['senha_atual', 'nova_senha'], properties: { senha_atual: { type: 'string' }, nova_senha: { type: 'string', minLength: 8, maxLength: 72 } } } } } },
+        responses: { '200': { description: 'Senha alterada' } },
+      },
+    },
     '/auth/login': {
       post: {
         summary: 'Login do usuário',

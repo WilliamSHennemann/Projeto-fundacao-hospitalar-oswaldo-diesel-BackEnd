@@ -3,10 +3,19 @@ import { z } from 'zod';
 import { appStore, getPesquisaById, getRespostaByPesquisaPergunta } from '../../shared/store.js';
 import { calculateAverage, sortQuestionsForFlow } from '../../shared/metrics.js';
 import { AppError } from '../../shared/errors.js';
-import { asyncHandler, databaseConfigured, query } from '../../config/database.js';
+import { asyncHandler, databaseConfigured, pool, query } from '../../config/database.js';
 import { randomBytes } from 'node:crypto';
+import rateLimit from 'express-rate-limit';
+import { env } from '../../config/env.js';
 
 const router = Router();
+const pesquisaLimiter = rateLimit({
+  windowMs: env.pesquisaRateLimitWindowMs,
+  max: env.pesquisaRateLimitMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ erro: 'Muitas pesquisas iniciadas. Aguarde alguns minutos.', codigo: 'RATE_LIMITED' }),
+});
 
 const isValidIsoDate = (value) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -23,16 +32,16 @@ const createPesquisaSchema = z.object({
 
 const respostaSchema = z.object({
   valor: z.number().int().min(0).max(10).optional(),
-  texto: z.string().optional(),
+  texto: z.string().max(2000).optional(),
   opcao_id: z.number().int().optional(),
   pergunta_id: z.number().int().positive(),
 });
 
 const pacienteSchema = z.object({
-  nome: z.string().optional(),
+  nome: z.string().max(120).optional(),
   nome_mae: z.string().optional(),
   data_nascimento: z.string().optional(),
-  telefone: z.string().min(1).optional(),
+  telefone: z.string().min(1).max(30).optional(),
   consentimento: z.boolean().default(false),
 }).refine((data) => !data.consentimento || Boolean(data.telefone?.trim()), {
   message: 'Telefone obrigatório quando houver consentimento para contato',
@@ -177,7 +186,7 @@ router.get('/setores/:slug/perguntas/:n', asyncHandler(async (req, res) => {
   });
 }));
 
-router.post('/pesquisas', asyncHandler(async (req, res) => {
+router.post('/pesquisas', pesquisaLimiter, asyncHandler(async (req, res) => {
   const payload = createPesquisaSchema.safeParse(req.body);
   if (!payload.success) {
     return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
@@ -242,6 +251,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
     const surveyResult = await query('SELECT * FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
     const pesquisaDb = surveyResult.rows[0];
     if (!pesquisaDb) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    if (pesquisaDb.status === 'concluida') throw new AppError('Pesquisa já concluída', 409, 'PESQUISA_CONCLUIDA');
 
     const questionResult = await query(
       `SELECT * FROM pergunta
@@ -250,6 +260,21 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
     );
     const perguntaDb = questionResult.rows[0];
     if (!perguntaDb) throw new AppError('Pergunta não encontrada', 404, 'PERGUNTA_NOT_FOUND');
+    const d = payload.data;
+    if (perguntaDb.tipo === 'rostinho' && (d.valor === undefined || d.valor < 1 || d.valor > 5)) {
+      throw new AppError('Resposta inválida para pergunta rostinho', 400, 'RESPOSTA_INVALIDA');
+    }
+    if (perguntaDb.tipo === 'nps' && (d.valor === undefined || d.valor < 0 || d.valor > 10)) {
+      throw new AppError('Resposta inválida para pergunta NPS', 400, 'RESPOSTA_INVALIDA');
+    }
+    if (perguntaDb.tipo === 'multipla') {
+      if (d.opcao_id === undefined) throw new AppError('opcao_id é obrigatório', 400, 'RESPOSTA_INVALIDA');
+      const option = await query('SELECT id FROM opcao_resposta WHERE id = $1 AND pergunta_id = $2', [d.opcao_id, perguntaDb.id]);
+      if (!option.rowCount) throw new AppError('opcao_id não pertence à pergunta', 400, 'RESPOSTA_INVALIDA');
+    }
+    if (perguntaDb.tipo === 'texto' && (d.texto === undefined || d.texto.trim() === '' || d.valor !== undefined || d.opcao_id !== undefined)) {
+      throw new AppError('Resposta de texto inválida', 400, 'RESPOSTA_INVALIDA');
+    }
 
     await query(
       `INSERT INTO resposta (pesquisa_id, pergunta_id, opcao_id, valor, texto)
@@ -277,21 +302,8 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
       [pesquisaDb.id, mediaParcial, npsNota],
     );
 
-    const next = await query(
-      `SELECT s.slug, COUNT(p.id)::integer AS total
-       FROM setor s
-       LEFT JOIN pergunta p ON p.ativo = TRUE AND (p.setor_id = s.id OR p.geral = TRUE OR p.todos_setores = TRUE)
-       WHERE s.id = $1
-       GROUP BY s.id`,
-      [pesquisaDb.setor_id],
-    );
-    const total = next.rows[0]?.total ?? 0;
-    const nextQuestion = total > 0
-      ? `/pesquisa/${next.rows[0].slug}/pergunta/${Math.min(total, total)}`
-      : null;
     return res.json({
       ok: true,
-      proximaPergunta: nextQuestion,
       mediaParcial,
       ultima: perguntaDb.geral,
     });
@@ -301,6 +313,7 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
   if (!pesquisa) {
     throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
   }
+  if (pesquisa.status === 'concluida') throw new AppError('Pesquisa já concluída', 409, 'PESQUISA_CONCLUIDA');
 
   const pergunta = appStore.perguntas.find((item) => item.id === Number(req.params.perguntaId)
     && item.ativo
@@ -308,6 +321,14 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
   if (!pergunta) {
     throw new AppError('Pergunta não encontrada', 404, 'PERGUNTA_NOT_FOUND');
   }
+  const d = payload.data;
+  if (pergunta.tipo === 'rostinho' && (d.valor === undefined || d.valor < 1 || d.valor > 5)) throw new AppError('Resposta inválida para pergunta rostinho', 400, 'RESPOSTA_INVALIDA');
+  if (pergunta.tipo === 'nps' && (d.valor === undefined || d.valor < 0 || d.valor > 10)) throw new AppError('Resposta inválida para pergunta NPS', 400, 'RESPOSTA_INVALIDA');
+  if (pergunta.tipo === 'multipla') {
+    if (d.opcao_id === undefined) throw new AppError('opcao_id é obrigatório', 400, 'RESPOSTA_INVALIDA');
+    if (!appStore.opcoesResposta.some((option) => option.id === d.opcao_id && option.pergunta_id === pergunta.id)) throw new AppError('opcao_id não pertence à pergunta', 400, 'RESPOSTA_INVALIDA');
+  }
+  if (pergunta.tipo === 'texto' && (d.texto === undefined || d.texto.trim() === '' || d.valor !== undefined || d.opcao_id !== undefined)) throw new AppError('Resposta de texto inválida', 400, 'RESPOSTA_INVALIDA');
 
   const existing = getRespostaByPesquisaPergunta(pesquisa.id, pergunta.id);
   const resposta = {
@@ -335,12 +356,8 @@ router.put('/pesquisas/:id/respostas/:perguntaId', requirePesquisaToken, asyncHa
 
   pesquisa.ultima_atividade = new Date().toISOString();
 
-  const totalPerguntas = appStore.perguntas.filter((item) => item.ativo && (item.setor_id === pesquisa.setor_id || item.geral || item.todos_setores)).length;
-  const proximaPergunta = totalPerguntas > 0 ? `/pesquisa/${appStore.setores.find((setor) => setor.id === pesquisa.setor_id)?.slug ?? 'setor'}/pergunta/${Math.min(totalPerguntas, totalPerguntas)}` : null;
-
   return res.json({
     ok: true,
-    proximaPergunta,
     mediaParcial: pesquisa.media_parcial,
     ultima: pergunta.geral,
   });
@@ -351,6 +368,13 @@ router.post('/pesquisas/:id/finalizar', requirePesquisaToken, asyncHandler(async
     const result = await query('SELECT * FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
     const pesquisaDb = result.rows[0];
     if (!pesquisaDb) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    if (pesquisaDb.status === 'concluida') {
+      const encaminharIdempotente = Number(pesquisaDb.nps_nota) <= 6;
+      return res.json({
+        destino: encaminharIdempotente ? 'ouvidoria' : 'agradecimento',
+        motivo: encaminharIdempotente ? 'nps_baixo' : 'nps_adequado',
+      });
+    }
     if (pesquisaDb.nps_nota === null) {
       return res.status(422).json({ erro: 'NPS obrigatório antes de finalizar', codigo: 'NPS_REQUIRED' });
     }
@@ -373,6 +397,13 @@ router.post('/pesquisas/:id/finalizar', requirePesquisaToken, asyncHandler(async
     throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
   }
 
+  if (pesquisa.status === 'concluida') {
+    const encaminharIdempotente = Number(pesquisa.nps_nota) <= 6;
+    return res.json({
+      destino: encaminharIdempotente ? 'ouvidoria' : 'agradecimento',
+      motivo: encaminharIdempotente ? 'nps_baixo' : 'nps_adequado',
+    });
+  }
   if (pesquisa.nps_nota === null || pesquisa.nps_nota === undefined) {
     return res.status(422).json({ erro: 'NPS obrigatório antes de finalizar', codigo: 'NPS_REQUIRED' });
   }
@@ -396,20 +427,19 @@ router.post('/pesquisas/:id/paciente', requirePesquisaToken, asyncHandler(async 
   }
 
   if (databaseConfigured) {
-    const surveyResult = await query('SELECT id FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
+    const surveyResult = await query('SELECT id, status FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
     const survey = surveyResult.rows[0];
     if (!survey) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+    if (survey.status === 'concluida') throw new AppError('Pesquisa já concluída', 409, 'PESQUISA_CONCLUIDA');
     if (!payload.data.consentimento) {
       return res.status(400).json({ erro: 'Consentimento explícito obrigatório', codigo: 'CONSENTIMENTO_INVALIDO' });
     }
     const patient = await query(
       `INSERT INTO paciente (nome, nome_mae, data_nascimento, telefone, consentimento)
-       VALUES ($1, $2, $3, $4, TRUE)
+       VALUES ($1, NULL, NULL, $2, TRUE)
        RETURNING id`,
       [
         payload.data.nome ?? null,
-        payload.data.nome_mae ?? null,
-        payload.data.data_nascimento ?? null,
         payload.data.telefone ?? null,
       ],
     );
@@ -421,13 +451,16 @@ router.post('/pesquisas/:id/paciente', requirePesquisaToken, asyncHandler(async 
   if (!pesquisa) {
     throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
   }
+  if (pesquisa.status === 'concluida') throw new AppError('Pesquisa já concluída', 409, 'PESQUISA_CONCLUIDA');
   if (!payload.data.consentimento) {
     return res.status(400).json({ erro: 'Consentimento explícito obrigatório', codigo: 'CONSENTIMENTO_INVALIDO' });
   }
 
   const paciente = {
     id: appStore.pacientes.length + 1,
-    ...payload.data,
+    nome: payload.data.nome ?? null,
+    telefone: payload.data.telefone ?? null,
+    consentimento: true,
     criado_em: new Date().toISOString(),
   };
   appStore.pacientes.push(paciente);
@@ -441,60 +474,123 @@ router.post('/pesquisas/:id/paciente', requirePesquisaToken, asyncHandler(async 
 router.post('/pesquisas/:id/manifestacoes', requirePesquisaToken, asyncHandler(async (req, res) => {
   const schema = z.object({
     tipo: z.enum(['elogio', 'reclamacao', 'sugestao']),
-    descricao: z.string().min(5),
-    anonimo: z.boolean().optional().default(false),
+    descricao: z.string().max(2000).optional().default(''),
+    contato: z.object({
+      nome: z.string().max(120).optional(),
+      telefone: z.string(),
+      consentimento: z.literal(true),
+    }).optional(),
+    anonimo: z.boolean().optional(),
     canal_contato: z.string().optional(),
   });
-
   const payload = schema.safeParse(req.body);
   if (!payload.success) {
-    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: payload.error.flatten() });
+    const fieldErrors = {};
+    for (const issue of payload.error.issues) {
+      const field = issue.path[issue.path.length - 1];
+      if (['telefone', 'consentimento', 'descricao', 'nome'].includes(String(field))) {
+        fieldErrors[field] = [...(fieldErrors[field] ?? []), issue.message];
+      }
+    }
+    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: { fieldErrors } });
   }
 
+  const contact = payload.data.contato;
+  let phone = null;
+  if (contact) {
+    let digits = contact.telefone.replace(/\D/g, '');
+    if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) digits = digits.slice(2);
+    if (!/^\d{10,11}$/.test(digits)) {
+      return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: { fieldErrors: { telefone: ['Informe um telefone válido com DDD'] } } });
+    }
+    phone = digits;
+  }
+  if (!contact && payload.data.descricao.trim().length > 0 && payload.data.descricao.trim().length < 5) {
+    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: { fieldErrors: { descricao: ['Descrição deve ter pelo menos 5 caracteres'] } } });
+  }
+  if (!contact && !payload.data.descricao.trim()) {
+    return res.status(400).json({ erro: 'Dados inválidos', codigo: 'VALIDATION_ERROR', detalhes: { fieldErrors: { descricao: ['Descrição deve ter pelo menos 5 caracteres'] } } });
+  }
+  const description = contact && payload.data.descricao.trim() === ''
+    ? 'O paciente pediu retorno da Ouvidoria (sem relato escrito).'
+    : payload.data.descricao.trim();
+
   if (databaseConfigured) {
-    const result = await query('SELECT id, media_parcial, consentimento, anonimo FROM pesquisa WHERE id = $1', [Number(req.params.id)]);
-    const survey = result.rows[0];
-    if (!survey) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
-    const inserted = await query(
-      `INSERT INTO manifestacao (pesquisa_id, tipo, descricao, status, anonimo, origem, media_origem, canal_contato)
-       VALUES ($1, $2, $3, 'aberta', $4, 'pesquisa', $5, $6)
-       RETURNING *`,
-      [
-        survey.id,
-        payload.data.tipo,
-        payload.data.descricao,
-        payload.data.anonimo,
-        survey.media_parcial,
-        payload.data.anonimo || !survey.consentimento || survey.anonimo ? null : payload.data.canal_contato ?? null,
-      ],
-    );
-    const { canal_contato: _privateContact, ...publicManifestation } = inserted.rows[0];
-    return res.status(201).json(publicManifestation);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query('SELECT id, status, media_parcial, consentimento, anonimo FROM pesquisa WHERE id = $1 FOR UPDATE', [Number(req.params.id)]);
+      const survey = result.rows[0];
+      if (!survey) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+      if (!['concluida', 'em_andamento'].includes(survey.status)) throw new AppError('Pesquisa não permite manifestações', 409, 'PESQUISA_CONCLUIDA');
+      if (survey.status === 'em_andamento') {
+        const count = await client.query('SELECT COUNT(*)::integer AS total FROM manifestacao WHERE pesquisa_id = $1', [survey.id]);
+        if (count.rows[0].total >= 3) throw new AppError('Limite de 3 manifestações por pesquisa atingido', 409, 'MANIFESTACAO_LIMITE');
+      }
+      const count = await client.query('SELECT COUNT(*)::integer AS total FROM manifestacao WHERE pesquisa_id = $1', [survey.id]);
+      if (count.rows[0].total >= 3) throw new AppError('Limite de 3 manifestações por pesquisa atingido', 409, 'MANIFESTACAO_LIMITE');
+
+      let patientId = null;
+      if (contact) {
+        const patient = await client.query(
+          `INSERT INTO paciente (nome, telefone, consentimento) VALUES ($1, $2, TRUE) RETURNING id`,
+          [contact.nome ?? null, phone],
+        );
+        patientId = patient.rows[0].id;
+        await client.query(
+          `UPDATE pesquisa SET paciente_id = $2, anonimo = FALSE, consentimento = TRUE, ultima_atividade = NOW() WHERE id = $1`,
+          [survey.id, patientId],
+        );
+      }
+      const inserted = await client.query(
+        `INSERT INTO manifestacao (pesquisa_id, tipo, descricao, status, anonimo, origem, media_origem, canal_contato)
+         VALUES ($1, $2, $3, 'aberta', $4, 'pesquisa', $5, $6) RETURNING id, tipo, status`,
+        [survey.id, payload.data.tipo, description, !contact, survey.media_parcial, phone],
+      );
+      await client.query('COMMIT');
+      return res.status(201).json({
+        id: inserted.rows[0].id,
+        tipo: inserted.rows[0].tipo,
+        status: inserted.rows[0].status,
+        contato_registrado: Boolean(contact),
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   const pesquisa = getPesquisaById(Number(req.params.id));
-  if (!pesquisa) {
-    throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+  if (!pesquisa) throw new AppError('Pesquisa não encontrada', 404, 'PESQUISA_NOT_FOUND');
+  if (!['concluida', 'em_andamento'].includes(pesquisa.status)) throw new AppError('Pesquisa não permite manifestações', 409, 'PESQUISA_CONCLUIDA');
+  const existing = appStore.manifestacoes.filter((item) => item.pesquisa_id === pesquisa.id);
+  if (existing.length >= 3) throw new AppError('Limite de 3 manifestações por pesquisa atingido', 409, 'MANIFESTACAO_LIMITE');
+  let patientId = null;
+  if (contact) {
+    patientId = appStore.pacientes.length + 1;
+    appStore.pacientes.push({ id: patientId, nome: contact.nome ?? null, telefone: phone, consentimento: true, criado_em: new Date().toISOString() });
+    pesquisa.paciente_id = patientId;
+    pesquisa.anonimo = false;
+    pesquisa.consentimento = true;
   }
-
   const manifestacao = {
     id: appStore.manifestacoes.length + 1,
     pesquisa_id: pesquisa.id,
     tipo: payload.data.tipo,
-    descricao: payload.data.descricao,
+    descricao: description,
     status: 'aberta',
     data: new Date().toISOString(),
-    anonimo: payload.data.anonimo,
+    anonimo: !contact,
     origem: 'pesquisa',
     media_origem: pesquisa.media_parcial,
     motivo_encaminhamento: null,
-    canal_contato: payload.data.anonimo || !pesquisa.consentimento || pesquisa.anonimo ? null : payload.data.canal_contato ?? null,
+    canal_contato: phone,
     parecer_interno: null,
   };
-
   appStore.manifestacoes.push(manifestacao);
-  const { canal_contato: _privateContact, ...publicManifestation } = manifestacao;
-  return res.status(201).json(publicManifestation);
+  return res.status(201).json({ id: manifestacao.id, tipo: manifestacao.tipo, status: manifestacao.status, contato_registrado: Boolean(contact) });
 }));
 
 export default router;

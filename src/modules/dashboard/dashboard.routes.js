@@ -44,6 +44,13 @@ function matchesFilters(pesquisa, filters) {
   return !filters.setor_id || pesquisa.setor_id === filters.setor_id;
 }
 
+function isPesquisaParcial(pesquisa, limiteMinutos = 30) {
+  if (pesquisa.status === 'parcial') return true;
+  if (pesquisa.status !== 'em_andamento') return false;
+  const ultima = new Date(pesquisa.ultima_atividade ?? pesquisa.data_hora).getTime();
+  return Number.isFinite(ultima) && Date.now() - ultima >= limiteMinutos * 60000;
+}
+
 const dashboardPermission = [requireAnyPermission('super_admin', 'gestao', 'ouvidoria', 'visu'), enforceUserSectorScope()];
 
 router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandler(async (req, res) => {
@@ -52,7 +59,14 @@ router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandle
     const where = dbWhere(filters);
     const result = await query(
       `SELECT COUNT(*)::integer AS total,
-              COUNT(*) FILTER (WHERE p.status = 'parcial')::integer AS parciais,
+              COUNT(*) FILTER (
+                WHERE p.status = 'parcial'
+                   OR (p.status = 'em_andamento' AND p.ultima_atividade <= NOW() - (
+                     COALESCE((SELECT (c.valor->>'valor')::integer FROM configuracao c
+                               WHERE c.hospital_id = (SELECT hospital_id FROM setor s WHERE s.id = p.setor_id)
+                                 AND c.chave = 'minutos_abandono'), 30) * INTERVAL '1 minute'
+                   ))
+              )::integer AS parciais,
               AVG(p.media_parcial) AS media,
               ARRAY_AGG(p.nps_nota) FILTER (WHERE p.nps_nota IS NOT NULL) AS notas
        FROM pesquisa p ${where.sql}`,
@@ -68,7 +82,8 @@ router.get('/dashboard/resumo', requireAuth, ...dashboardPermission, asyncHandle
     });
   }
   const pesquisas = appStore.pesquisas.filter((item) => matchesFilters(item, filters));
-  const parciais = pesquisas.filter((item) => item.status === 'parcial').length;
+  const limite = Number(appStore.configuracoes.find((item) => item.chave === 'minutos_abandono')?.valor?.valor ?? 30);
+  const parciais = pesquisas.filter((item) => isPesquisaParcial(item, limite)).length;
   return res.json({
     nps_geral: calculateNps(pesquisas.filter((item) => item.nps_nota !== null).map((item) => item.nps_nota)),
     media_geral: calculateAverage(pesquisas.map((item) => item.media_parcial)),
@@ -141,11 +156,12 @@ router.get('/dashboard/em-andamento', requireAuth, ...dashboardPermission, async
   const filters = parseFilters(req);
   if (databaseConfigured) {
     const where = dbWhere(filters);
-    const conditions = [`p.status = 'em_andamento'`, ...(where.sql ? [where.sql.replace(/^WHERE /, '')] : [])];
+    const conditions = [`p.status = 'em_andamento'`, `p.ultima_atividade > NOW() - (COALESCE((SELECT (c.valor->>'valor')::integer FROM configuracao c WHERE c.hospital_id = (SELECT hospital_id FROM setor s WHERE s.id = p.setor_id) AND c.chave = 'minutos_abandono'), 30) * INTERVAL '1 minute')`, ...(where.sql ? [where.sql.replace(/^WHERE /, '')] : [])];
     const result = await query(`SELECT p.id, p.setor_id, p.media_parcial, p.ultima_atividade, p.status FROM pesquisa p WHERE ${conditions.join(' AND ')} ORDER BY p.ultima_atividade DESC`, where.values);
     return res.json(result.rows);
   }
-  return res.json(appStore.pesquisas.filter((item) => item.status === 'em_andamento' && matchesFilters(item, filters)).map((pesquisa) => ({ id: pesquisa.id, setor_id: pesquisa.setor_id, media_parcial: pesquisa.media_parcial, ultima_atividade: pesquisa.ultima_atividade, status: pesquisa.status })));
+  const limite = Number(appStore.configuracoes.find((item) => item.chave === 'minutos_abandono')?.valor?.valor ?? 30);
+  return res.json(appStore.pesquisas.filter((item) => item.status === 'em_andamento' && !isPesquisaParcial(item, limite) && matchesFilters(item, filters)).map((pesquisa) => ({ id: pesquisa.id, setor_id: pesquisa.setor_id, media_parcial: pesquisa.media_parcial, ultima_atividade: pesquisa.ultima_atividade, status: pesquisa.status })));
 }));
 
 export default router;

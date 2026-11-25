@@ -67,6 +67,47 @@ router.get('/jobs/abandono', requireAuth, requirePermission('gestao'), enforceUs
   });
 }));
 
+router.post('/jobs/retencao/aplicar', requireAuth, requirePermission('super_admin'), asyncHandler(async (_req, res) => {
+  const dias = getConfigNumber('retencao_dias', 365);
+  if (databaseConfigured) {
+    const result = await query(
+      `WITH antigos AS (
+         SELECT pa.id
+         FROM paciente pa
+         WHERE pa.criado_em <= NOW() - ($1::integer * INTERVAL '1 day')
+           AND pa.consentimento = TRUE
+       )
+       UPDATE paciente pa SET nome = NULL, telefone = NULL, consentimento = FALSE
+       FROM antigos a
+       WHERE pa.id = a.id
+       RETURNING pa.id`,
+      [dias],
+    );
+    const ids = result.rows.map((row) => row.id);
+    if (ids.length) {
+      await query(`UPDATE manifestacao SET canal_contato = NULL
+                   WHERE pesquisa_id IN (SELECT id FROM pesquisa WHERE paciente_id = ANY($1::int[]))`, [ids]);
+    }
+    return res.json({ ok: true, pacientes_anonimizados: ids.length, retencao_dias: dias });
+  }
+  const limite = Date.now() - dias * 86400000;
+  let count = 0;
+  appStore.pacientes.forEach((patient) => {
+    const criado = new Date(patient.criado_em ?? 0).getTime();
+    if (patient.consentimento && criado < limite) {
+      patient.nome = null;
+      patient.telefone = null;
+      patient.consentimento = false;
+      count += 1;
+    }
+  });
+  appStore.pesquisas.filter((survey) => appStore.pacientes.some((patient) => patient.id === survey.paciente_id && !patient.consentimento))
+    .forEach((survey) => appStore.manifestacoes.forEach((manifestation) => {
+      if (manifestation.pesquisa_id === survey.id) manifestation.canal_contato = null;
+    }));
+  return res.json({ ok: true, pacientes_anonimizados: count, retencao_dias: dias });
+}));
+
 router.get('/jobs/retencao', requireAuth, requirePermission('gestao'), enforceUserSectorScope(), asyncHandler(async (req, res) => {
   if (databaseConfigured) {
     const [setting, result] = await Promise.all([
@@ -115,3 +156,4 @@ router.get('/jobs/retencao', requireAuth, requirePermission('gestao'), enforceUs
 }));
 
 export default router;
+
