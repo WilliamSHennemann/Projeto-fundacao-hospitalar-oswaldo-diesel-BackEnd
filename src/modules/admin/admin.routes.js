@@ -45,6 +45,9 @@ const gestorPermissions = ['dashboard', 'exportacoes', 'perguntas'];
 const isGestaoProfile = (permissions) => Array.isArray(permissions)
   && permissions.length === 1
   && permissions[0] === 'gestao';
+const isDedicatedRoleProfile = (permissions, role) => Array.isArray(permissions)
+  && permissions.length === 1
+  && permissions[0] === role;
 
 const normalizeSetorSlug = (value) => value
   .normalize('NFD')
@@ -513,11 +516,11 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
       await client.query('BEGIN');
       const profileResult = await client.query(
         `SELECT id FROM perfil
-         WHERE EXISTS (SELECT 1 FROM jsonb_array_elements_text(permissoes->'roles') r(role) WHERE r.role = $1)
-         ORDER BY id LIMIT 1`,
+         WHERE permissoes->'roles' = jsonb_build_array($1::text)
+           AND NOT (permissoes->'roles' @> '["super_admin"]'::jsonb)`,
         [role],
       );
-      if (!profileResult.rowCount) {
+      if (profileResult.rowCount !== 1) {
         throw new AppError('Perfil não configurado', 500, 'PROFILE_NOT_CONFIGURED');
       }
       if (['gestao', 'admin_setor'].includes(requestedPerfil)) {
@@ -527,10 +530,16 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
         }
       }
       const inactive = await client.query(
-        'SELECT id FROM usuario WHERE LOWER(email) = LOWER($1) AND ativo = FALSE',
+        `SELECT u.id, p.permissoes->'roles' AS roles
+         FROM usuario u JOIN perfil p ON p.id = u.perfil_id
+         WHERE LOWER(u.email) = LOWER($1) AND u.ativo = FALSE
+         FOR UPDATE OF u`,
         [email],
       );
       if (inactive.rowCount) {
+        if (inactive.rows[0].roles?.includes('super_admin')) {
+          throw new AppError('Super administrador não pode ser rebaixado pela API', 404, 'USER_NOT_FOUND');
+        }
         const reactivated = await client.query(
           `UPDATE usuario
            SET nome = $2, perfil_id = $3, setor_id = $4, ativo = TRUE, senha_hash = $5
@@ -570,8 +579,8 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
     }
   }
 
-  const profile = appStore.perfis.find((item) =>
-    !item.permissoes.includes('super_admin') && item.permissoes.includes(role));
+  const profile = appStore.perfis.find((item) => isDedicatedRoleProfile(item.permissoes, role)
+    && !item.permissoes.includes('super_admin'));
   if (!profile) throw new AppError('Perfil não configurado', 500, 'PROFILE_NOT_CONFIGURED');
   if (['gestao', 'admin_setor'].includes(requestedPerfil)) {
     const sector = appStore.setores.find((item) => item.id === data.setor_id && item.ativo);
@@ -579,6 +588,11 @@ router.post('/admin/usuarios', requireAuth, requirePermission('super_admin'), as
   }
   const inactive = appStore.usuarios.find((item) => item.email.toLowerCase() === email && !item.ativo);
   if (inactive) {
+    const inactivePermissions = appStore.perfis.find((item) => item.id === inactive.perfil_id)?.permissoes
+      ?? (inactive.perfil ? [inactive.perfil] : []);
+    if (inactive.perfil === 'super_admin' || inactivePermissions.includes('super_admin')) {
+      throw new AppError('Super administrador não pode ser rebaixado pela API', 404, 'USER_NOT_FOUND');
+    }
     Object.assign(inactive, {
       nome: data.nome,
       perfil_id: profile.id,
@@ -644,7 +658,8 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
     try {
       await client.query('BEGIN');
       const currentResult = await client.query(
-        `SELECT u.id, u.nome, u.email, u.setor_id
+        `SELECT u.id, u.nome, u.email, u.setor_id,
+                COALESCE(p.permissoes->'roles', '[]'::jsonb) AS roles
          FROM usuario u JOIN perfil p ON p.id = u.perfil_id
          WHERE u.id = $1 AND u.ativo = TRUE
          FOR UPDATE OF u`,
@@ -652,6 +667,9 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
       );
       if (!currentResult.rowCount) throw new AppError('Gestor não encontrado', 404, 'USER_NOT_FOUND');
       const current = currentResult.rows[0];
+      if (current.roles.includes('super_admin')) {
+        throw new AppError('Super administrador não pode ser alterado pela API', 404, 'USER_NOT_FOUND');
+      }
       const email = (data.email ?? current.email).toLowerCase();
       const setorId = data.setor_id ?? current.setor_id;
 
@@ -685,7 +703,7 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
   }
 
   const user = appStore.usuarios.find((item) => item.id === id && item.ativo);
-  const profilePermissions = user
+  let profilePermissions = user
     ? appStore.perfis.find((profile) => profile.id === user.perfil_id)?.permissoes ?? (user.perfil ? [user.perfil] : [])
     : [];
   if (!user) {
@@ -709,10 +727,12 @@ router.patch('/admin/usuarios/:id', requireAuth, requirePermission('super_admin'
       throw new AppError('setor_id é obrigatório para este perfil', 400, 'VALIDATION_ERROR');
     }
     const role = data.perfil === 'visualizador' ? 'visu' : data.perfil;
-    const profile = appStore.perfis.find((item) => item.permissoes.includes(role));
+    const profile = appStore.perfis.find((item) => isDedicatedRoleProfile(item.permissoes, role)
+      && !item.permissoes.includes('super_admin'));
     if (!profile) throw new AppError('Perfil não configurado', 500, 'PROFILE_NOT_CONFIGURED');
     user.perfil = data.perfil;
     user.perfil_id = profile.id;
+    profilePermissions = profile.permissoes;
   }
   return res.json({
     id: user.id,

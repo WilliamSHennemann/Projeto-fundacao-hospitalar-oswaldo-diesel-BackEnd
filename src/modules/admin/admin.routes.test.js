@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { afterEach, describe, expect, it } from 'vitest';
 import app from '../../app.js';
 import { appStore } from '../../shared/store.js';
+import { issueToken } from '../auth/auth.routes.js';
 
 let createdQuestionId;
 let temporaryUserId;
@@ -278,6 +279,122 @@ describe('admin question management', () => {
       .set('Authorization', `Bearer ${superLogin.body.token}`);
     expect(deniedSuperAdminRemoval.status).toBe(404);
     expect(appStore.usuarios.find((user) => user.id === 1).ativo).toBe(true);
+  });
+
+  it('creates, lists, deactivates and reactivates an Ouvidoria account with its dedicated profile', async () => {
+    const ouvidoriaProfile = appStore.perfis.find((profile) => profile.permissoes.length === 1
+      && profile.permissoes[0] === 'ouvidoria');
+    const token = issueToken({
+      id: 1,
+      email: 'super@fundacao.com',
+      perfil: 'super_admin',
+      permissoes: ['super_admin'],
+    });
+    const auth = { Authorization: `Bearer ${token}` };
+    const created = await request(app).post('/api/admin/usuarios')
+      .set(auth)
+      .send({
+        nome: 'Ouvidoria de teste',
+        email: 'ouvidoria-teste@fundacao.com',
+        senha: 'senha12345',
+        perfil: 'ouvidoria',
+      });
+
+    expect(created.status).toBe(201);
+    temporaryUserId = created.body.id;
+    expect(created.body.perfil).toBe('ouvidoria');
+    expect(appStore.usuarios.find((user) => user.id === temporaryUserId).perfil_id).toBe(ouvidoriaProfile.id);
+
+    const listed = await request(app).get('/api/admin/usuarios?incluir_inativos=true').set(auth);
+    expect(listed.status).toBe(200);
+    expect(listed.body.find((user) => user.id === temporaryUserId)).toMatchObject({
+      perfil: 'ouvidoria',
+      permissoes: ['ouvidoria'],
+    });
+
+    const deactivated = await request(app).delete(`/api/admin/usuarios/${temporaryUserId}`).set(auth);
+    expect(deactivated.status).toBe(200);
+    expect(appStore.usuarios.find((user) => user.id === temporaryUserId).ativo).toBe(false);
+
+    const reactivated = await request(app).post('/api/admin/usuarios')
+      .set(auth)
+      .send({
+        nome: 'Ouvidoria reativada',
+        email: 'ouvidoria-teste@fundacao.com',
+        senha: 'senha12345',
+        perfil: 'ouvidoria',
+      });
+    expect(reactivated.status).toBe(201);
+    expect(appStore.usuarios.find((user) => user.id === temporaryUserId)).toMatchObject({
+      perfil: 'ouvidoria',
+      perfil_id: ouvidoriaProfile.id,
+      ativo: true,
+    });
+  });
+
+  it('does not reclassify an inactive Super Admin during account creation', async () => {
+    const token = issueToken({
+      id: 1,
+      email: 'super@fundacao.com',
+      perfil: 'super_admin',
+      permissoes: ['super_admin'],
+    });
+    temporaryUserId = Math.max(0, ...appStore.usuarios.map((user) => user.id)) + 1;
+    const original = {
+      id: temporaryUserId,
+      nome: 'Super Admin inativo',
+      email: 'super-inativo@fundacao.com',
+      perfil_id: 1,
+      perfil: 'super_admin',
+      setor_id: null,
+      ativo: false,
+      senha_hash: 'hash-original',
+    };
+    appStore.usuarios.push(original);
+
+    const response = await request(app).post('/api/admin/usuarios')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        nome: 'Tentativa de rebaixamento',
+        email: original.email,
+        senha: 'senha12345',
+        perfil: 'ouvidoria',
+      });
+
+    expect(response.status).toBe(404);
+    expect(appStore.usuarios.find((user) => user.id === temporaryUserId)).toEqual(original);
+  });
+
+  it('uses the dedicated profile when changing a user to Ouvidoria', async () => {
+    const ouvidoriaProfile = appStore.perfis.find((profile) => profile.permissoes.length === 1
+      && profile.permissoes[0] === 'ouvidoria');
+    const token = issueToken({
+      id: 1,
+      email: 'super@fundacao.com',
+      perfil: 'super_admin',
+      permissoes: ['super_admin'],
+    });
+    temporaryUserId = Math.max(0, ...appStore.usuarios.map((user) => user.id)) + 1;
+    appStore.usuarios.push({
+      id: temporaryUserId,
+      nome: 'Usuário editável',
+      email: 'usuario-editavel@fundacao.com',
+      perfil_id: 3,
+      perfil: 'gestao',
+      setor_id: 1,
+      ativo: true,
+    });
+
+    const response = await request(app).patch(`/api/admin/usuarios/${temporaryUserId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ perfil: 'ouvidoria' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      perfil: 'ouvidoria',
+      permissoes: ['ouvidoria'],
+    });
+    expect(appStore.usuarios.find((user) => user.id === temporaryUserId).perfil_id).toBe(ouvidoriaProfile.id);
   });
 
   it('creates a new sector with a slug-based public URL', async () => {
